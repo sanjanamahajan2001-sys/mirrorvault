@@ -20,7 +20,12 @@ func (m TUIModel) viewScan() string {
 	enterHint := KeyHintStyle.Render("ENTER")
 	qHint := KeyHintStyle.Render("Q")
 
-	footerContent := fmt.Sprintf(" %s proceed to backup    %s exit ", enterHint, qHint)
+	var footerContent string
+	if m.Mode == ScheduleMode {
+		footerContent = fmt.Sprintf(" %s proceed to schedule-daily backup    %s exit ", enterHint, qHint)
+	} else {
+		footerContent = fmt.Sprintf(" %s proceed to backup    %s exit ", enterHint, qHint)
+	}
 	b.WriteString("\n" + FooterStyle.Render(footerContent))
 
 	return b.String()

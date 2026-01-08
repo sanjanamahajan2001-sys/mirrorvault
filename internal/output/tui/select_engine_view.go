@@ -36,7 +36,13 @@ func (m TUIModel) viewEngineSelect() string {
 	// Header — keep consistent with scan screen
 	renderHeader(&b, m.Mode)
 
-	b.WriteString(SectionTitleStyle.Render("Select Database Engine") + "\n\n")
+	var title string
+	if m.Mode == ScheduleMode {
+		title = "Select database engine for daily backup"
+	} else {
+		title = "Select Database Engine"
+	}
+	b.WriteString(SectionTitleStyle.Render(title) + "\n\n")
 
 	for i, db := range m.ScanResult.Databases {
 		// Base style

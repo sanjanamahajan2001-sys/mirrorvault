@@ -91,6 +91,41 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				
+				// For ScheduleMode, transition to time input
+				if m.Mode == ScheduleMode {
+					// Get all selected engines and their databases
+					// For now, we'll schedule one engine at a time
+					// Start with the current engine
+					currentEngine := m.currentEngine()
+					if currentEngine == nil {
+						return m, nil
+					}
+					
+					// Get selected databases for current engine
+					selectedDBs := []string{}
+					if dbMap, ok := m.Selection.SelectedDBs[currentEngine.Engine]; ok {
+						for dbName, selected := range dbMap {
+							if selected {
+								selectedDBs = append(selectedDBs, dbName)
+							}
+						}
+					}
+					
+					if len(selectedDBs) == 0 {
+						return m, nil
+					}
+					
+					// Create schedule data
+					m.ScheduleData = &ScheduleData{
+						Engine:    currentEngine.Engine,
+						Databases: selectedDBs,
+						Time:      "",
+					}
+					m.ScheduleTime = ""
+					m.ViewState = ViewScheduleTime
+					return m, nil
+				}
+				
 				// Build ExecState with all selected databases from all engines
 				var allExecItems []ExecItem
 				for engineName, dbNames := range selection {
@@ -215,6 +250,15 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ViewExecute:
 			return m.updateExecute(msg)
+
+		case ViewScheduleTime:
+			return m.updateScheduleTime(msg)
+
+		case ViewScheduleConfirm:
+			return m.updateScheduleConfirm(msg)
+
+		case ViewScheduleList:
+			return m.updateScheduleList(msg)
 		}
 
 	default:
@@ -235,6 +279,12 @@ func (m TUIModel) View() string {
 		return m.viewDBSelect()
 	case ViewExecute:
 		return m.viewExecute()
+	case ViewScheduleTime:
+		return m.viewScheduleTime()
+	case ViewScheduleConfirm:
+		return m.viewScheduleConfirm()
+	case ViewScheduleList:
+		return m.viewScheduleList()
 	default:
 		return m.viewScan()
 	}

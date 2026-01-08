@@ -2,6 +2,7 @@ package plan
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 )
 
 const DefaultBackupDir = "/var/backups/mirrorvault"
+const DailyBackupDir = "/var/backups/mirrorvault/daily-backups"
 
 func normalizeEngineDir(engine string) string {
 	return strings.ToLower(engine)
@@ -28,6 +30,13 @@ func Build(
 		CreatedAt: time.Now(),
 	}
 
+	// Check if this is a scheduled backup (via environment variable)
+	isScheduled := os.Getenv("MIRRORVAULT_SCHEDULED") == "true"
+	baseDir := DefaultBackupDir
+	if isScheduled {
+		baseDir = DailyBackupDir
+	}
+
 	for _, db := range scan.Databases {
 		dbNames, ok := selected[db.Engine]
 		if !ok || len(dbNames) == 0 {
@@ -39,7 +48,7 @@ func Build(
 			Version:      db.Version,
 			RequiresAuth: db.RequiresAuth,
 			OutputDir: filepath.Join(
-				DefaultBackupDir,
+				baseDir,
 				normalizeEngineDir(db.Engine),
 			),
 		}

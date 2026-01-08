@@ -11,6 +11,7 @@ type Mode int
 const (
     ScanMode Mode = iota
     BackupMode
+    ScheduleMode
 )
 
 type ViewState int
@@ -20,7 +21,16 @@ const (
     ViewSelectEngine
     ViewSelectDB
     ViewExecute
+    ViewScheduleTime
+    ViewScheduleConfirm
+    ViewScheduleList
 )
+
+type ScheduleData struct {
+    Engine   string
+    Databases []string
+    Time     string // Format: HH:MM (e.g., "02:30")
+}
 
 type TUIModel struct {
     ScanResult model.ScanResult
@@ -33,6 +43,13 @@ type TUIModel struct {
     // 🔥 REQUIRED FOR EXECUTION
     Plan *plan.BackupPlan
     Auth *credentials.AuthContext
+
+    // 🔥 REQUIRED FOR SCHEDULING
+    ScheduleTime string        // Current time input
+    ScheduleData *ScheduleData // Current schedule being created
+    Schedules    []ScheduleData // All confirmed schedules
+    ScheduleTimerNames []string  // Timer names for each schedule (for editing/deleting)
+    ScheduleIndex int           // Currently selected schedule index in list view
 
     Ready bool
     Exit  bool

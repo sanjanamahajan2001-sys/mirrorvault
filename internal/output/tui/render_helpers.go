@@ -17,6 +17,8 @@ func renderHeader(b *strings.Builder, mode Mode) {
 
 	if mode == ScanMode {
 		b.WriteString(ModeStyle.Render("Mode: Scan (read-only)") + "\n\n")
+	} else if mode == ScheduleMode {
+		b.WriteString(ModeStyle.Render("Mode: Backup Scheduler") + "\n\n")
 	} else {
 		b.WriteString(ModeStyle.Render("Mode: Backup") + "\n\n")
 	}
