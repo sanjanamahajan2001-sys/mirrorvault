@@ -64,5 +64,5 @@ var (
 		BorderForeground(lipgloss.Color("#89b4fa")).
 		Padding(1, 3).
 		Width(50).
-		Align(lipgloss.Left)
+		Align(lipgloss.Left) // Ensure this stays Left
 )

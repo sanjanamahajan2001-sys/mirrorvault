@@ -29,10 +29,20 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
 		if m.Selection.DBIndex >= 0 && m.Selection.DBIndex < len(displayNames) {
 			name := displayNames[m.Selection.DBIndex]
+			engineName := engine.Engine
+			
+			// Initialize engine map if it doesn't exist
+			if m.Selection.SelectedDBs[engineName] == nil {
+				m.Selection.SelectedDBs[engineName] = make(map[string]bool)
+			}
+			
 			if engine.RequiresAuth {
-				m.Selection.SelectedDBs = map[string]bool{name: true}
+				// For auth-enabled engines, only one database allowed
+				// Clear all selections for this engine first
+				m.Selection.SelectedDBs[engineName] = map[string]bool{name: true}
 			} else {
-				m.Selection.SelectedDBs[name] = !m.Selection.SelectedDBs[name]
+				// Toggle selection for this database in this engine
+				m.Selection.SelectedDBs[engineName][name] = !m.Selection.SelectedDBs[engineName][name]
 			}
 		}
 	case "enter":
@@ -62,7 +72,8 @@ func (m TUIModel) viewDBSelect() string {
 		}
 
 		check := "[ ] "
-		if m.Selection.SelectedDBs[name] {
+		engineName := engine.Engine
+		if m.Selection.SelectedDBs[engineName] != nil && m.Selection.SelectedDBs[engineName][name] {
 			check = "[x] "
 		}
 

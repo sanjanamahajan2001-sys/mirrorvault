@@ -63,6 +63,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				m.ViewState = ViewSelectEngine
 			}
+			return m, nil
 
 		case ViewSelectEngine:
 			switch msg.String() {
@@ -77,25 +78,34 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.ViewState = ViewSelectDB
 			}
+			return m, nil
 
 		case ViewSelectDB:
 			if msg.String() == "enter" {
-				engine := m.currentEngine()
-				if engine != nil {
-					var dbs []string
-					for name, ok := range m.Selection.SelectedDBs {
-						if ok {
-							dbs = append(dbs, name)
-						}
+				// Export all selections from all engines
+				selection := m.ExportSelection()
+				
+				// If no databases selected, can't proceed
+				if len(selection) == 0 {
+					// Can't create exec state with no databases
+					return m, nil
+				}
+				
+				// Build ExecState with all selected databases from all engines
+				var allExecItems []ExecItem
+				for engineName, dbNames := range selection {
+					for _, dbName := range dbNames {
+						allExecItems = append(allExecItems, ExecItem{
+							Engine:   engineName,
+							Database: dbName,
+							Status:   ExecPending,
+						})
 					}
-					
-					// If no databases selected, can't proceed
-					if len(dbs) == 0 {
-						// Can't create exec state with no databases
-						return m, nil
-					}
-					
-					m.Exec = NewExecState(engine.Engine, dbs)
+				}
+				
+				m.Exec = ExecState{
+					Items: allExecItems,
+				}
 					
 					// Build plan and collect credentials before execution
 					if m.Mode == BackupMode {
@@ -201,7 +211,6 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Enter key from password submission from being processed again
 					return m, tea.Batch(startExecutionCmd(m), execTick())
 				}
-			}
 			return m.updateDBSelect(msg)
 
 		case ViewExecute:
@@ -209,7 +218,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
-		// 🔥 ALL execution progress events land here
+		// 🔥 ALL execution progress events land here (non-KeyMsg messages)
 		if m.ViewState == ViewExecute {
 			return m.updateExecute(msg)
 		}
