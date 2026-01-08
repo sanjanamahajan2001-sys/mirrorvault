@@ -260,6 +260,8 @@ func runListSchedules() {
                         ScheduleTimerNames: timerNames,
                         ScheduleIndex:      0,
                         ViewState:          tui.ViewScheduleList,
+                        Mode:              tui.ScheduleMode, // Set mode to prevent showing scan view
+                        Selection:          tui.NewSelectionState(),
                 }
 
                 // Run TUI to show schedules

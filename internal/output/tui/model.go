@@ -24,6 +24,8 @@ const (
     ViewScheduleTime
     ViewScheduleConfirm
     ViewScheduleList
+    ViewScheduleDuplicate
+    ViewScheduleDeleteConfirm
 )
 
 type ScheduleData struct {
@@ -50,6 +52,9 @@ type TUIModel struct {
     Schedules    []ScheduleData // All confirmed schedules
     ScheduleTimerNames []string  // Timer names for each schedule (for editing/deleting)
     ScheduleIndex int           // Currently selected schedule index in list view
+    DuplicateSchedules []ScheduleData // Conflicting schedules when duplicates detected
+    DuplicateTimerNames []string      // Timer names for duplicate schedules
+    PendingDeleteTimerName string    // Timer name pending deletion confirmation
 
     Ready bool
     Exit  bool

@@ -43,8 +43,12 @@ func (m TUIModel) updateScheduleTime(msg tea.Msg) (TUIModel, tea.Cmd) {
 			}
 
 		case "esc":
-			// Go back - check if we're editing from list view or creating new
-			if len(m.ScheduleTimerNames) > 0 {
+			// Go back - check if we're editing from list view, duplicate view, or creating new
+			if len(m.DuplicateTimerNames) > 0 {
+				// Editing from duplicate view - go back to duplicate view
+				m.ScheduleTime = ""
+				m.ViewState = ViewScheduleDuplicate
+			} else if len(m.ScheduleTimerNames) > 0 {
 				// Editing from list view - go back to list
 				m.ScheduleTime = ""
 				m.ViewState = ViewScheduleList

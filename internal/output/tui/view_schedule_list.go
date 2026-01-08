@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"mirrorvault/internal/schedule"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -35,46 +34,11 @@ func (m TUIModel) updateScheduleList(msg tea.Msg) (TUIModel, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			// Delete schedule
+			// Delete schedule - show confirmation
 			if len(m.Schedules) > 0 && m.ScheduleIndex < len(m.Schedules) {
-				// Store the timer name before deletion
-				timerName := ""
 				if m.ScheduleIndex < len(m.ScheduleTimerNames) {
-					timerName = m.ScheduleTimerNames[m.ScheduleIndex]
-				}
-				
-				if timerName != "" {
-					// Remove the schedule
-					if err := schedule.RemoveSchedule(timerName); err != nil {
-						// Error will be shown in next render
-						return m, nil
-					}
-					
-					// Reload schedules
-					allSchedules, err := schedule.GetAllSchedules()
-					if err != nil {
-						return m, nil
-					}
-					
-					// Update model
-					m.Schedules = []ScheduleData{}
-					m.ScheduleTimerNames = []string{}
-					for _, s := range allSchedules {
-						m.Schedules = append(m.Schedules, ScheduleData{
-							Engine:    s.Engine,
-							Databases: s.Databases,
-							Time:      s.Time,
-						})
-						m.ScheduleTimerNames = append(m.ScheduleTimerNames, s.TimerName)
-					}
-					
-					// Adjust index if needed
-					if m.ScheduleIndex >= len(m.Schedules) {
-						m.ScheduleIndex = len(m.Schedules) - 1
-					}
-					if m.ScheduleIndex < 0 {
-						m.ScheduleIndex = 0
-					}
+					m.PendingDeleteTimerName = m.ScheduleTimerNames[m.ScheduleIndex]
+					m.ViewState = ViewScheduleDeleteConfirm
 				}
 			}
 			return m, nil

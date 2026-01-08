@@ -60,7 +60,8 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.ViewState {
 
 		case ViewScan:
-			if msg.String() == "enter" {
+			// In ScanMode, Enter should do nothing - only allow exit
+			if msg.String() == "enter" && m.Mode != ScanMode {
 				m.ViewState = ViewSelectEngine
 			}
 			return m, nil
@@ -259,6 +260,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ViewScheduleList:
 			return m.updateScheduleList(msg)
+		case ViewScheduleDuplicate:
+			return m.updateScheduleDuplicate(msg)
+		case ViewScheduleDeleteConfirm:
+			return m.updateScheduleDeleteConfirm(msg)
 		}
 
 	default:
@@ -285,6 +290,10 @@ func (m TUIModel) View() string {
 		return m.viewScheduleConfirm()
 	case ViewScheduleList:
 		return m.viewScheduleList()
+	case ViewScheduleDuplicate:
+		return m.viewScheduleDuplicate()
+	case ViewScheduleDeleteConfirm:
+		return m.viewScheduleDeleteConfirm()
 	default:
 		return m.viewScan()
 	}

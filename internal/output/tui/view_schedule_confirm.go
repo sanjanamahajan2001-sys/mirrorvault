@@ -18,16 +18,22 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 				return m, nil
 			}
 
-			// Check if we're editing an existing schedule (from list view)
+			// Check if we're editing an existing schedule (from list view or duplicate view)
 			isEditing := len(m.ScheduleTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.ScheduleTimerNames)
+			
+			// Check if we came from duplicate view (duplicate timer names still exist)
+			fromDuplicateView := len(m.DuplicateTimerNames) > 0
 			
 			if isEditing {
 				// Update existing schedule
 				timerName := m.ScheduleTimerNames[m.ScheduleIndex]
-				err := schedule.UpdateScheduleTime(timerName, m.ScheduleData.Time)
-				if err != nil {
-					// Error updating - stay on confirmation view
-					return m, nil
+				
+				if timerName != "" {
+					err := schedule.UpdateScheduleTime(timerName, m.ScheduleData.Time)
+					if err != nil {
+						// Error updating - stay on confirmation view
+						return m, nil
+					}
 				}
 			} else {
 				// Creating new schedule - check for duplicates
@@ -35,8 +41,44 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 				if err != nil {
 					// Error checking, but proceed anyway
 				} else if len(duplicates) > 0 {
-					// Store duplicate info in model to show message
-					// For now, we'll show error and allow going back
+					// Load all schedules to find conflicting ones
+					allSchedules, err := schedule.GetAllSchedules()
+					if err != nil {
+						allSchedules = []schedule.Schedule{}
+					}
+					
+					// Find conflicting schedules
+					m.DuplicateSchedules = []ScheduleData{}
+					m.DuplicateTimerNames = []string{}
+					for _, s := range allSchedules {
+						if s.Engine == m.ScheduleData.Engine {
+							// Check if any database matches
+							hasConflict := false
+							for _, db := range m.ScheduleData.Databases {
+								for _, scheduledDB := range s.Databases {
+									if db == scheduledDB {
+										hasConflict = true
+										break
+									}
+								}
+								if hasConflict {
+									break
+								}
+							}
+							if hasConflict {
+								m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
+									Engine:    s.Engine,
+									Databases: s.Databases,
+									Time:      s.Time,
+								})
+								m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
+							}
+						}
+					}
+					
+					// Show duplicate selection view
+					m.ScheduleIndex = 0
+					m.ViewState = ViewScheduleDuplicate
 					return m, nil
 				}
 
@@ -48,9 +90,46 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 				)
 
 				if err != nil {
-					// If it's a duplicate error, show it
+					// If it's a duplicate error, load and show duplicates
 					if strings.Contains(err.Error(), "already scheduled") {
-						// Store error to display
+						// Load all schedules to find conflicting ones
+						allSchedules, err := schedule.GetAllSchedules()
+						if err != nil {
+							allSchedules = []schedule.Schedule{}
+						}
+						
+						// Find conflicting schedules
+						m.DuplicateSchedules = []ScheduleData{}
+						m.DuplicateTimerNames = []string{}
+						for _, s := range allSchedules {
+							if s.Engine == m.ScheduleData.Engine {
+								// Check if any database matches
+								hasConflict := false
+								for _, db := range m.ScheduleData.Databases {
+									for _, scheduledDB := range s.Databases {
+										if db == scheduledDB {
+											hasConflict = true
+											break
+										}
+									}
+									if hasConflict {
+										break
+									}
+								}
+								if hasConflict {
+									m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
+										Engine:    s.Engine,
+										Databases: s.Databases,
+										Time:      s.Time,
+									})
+									m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
+								}
+							}
+						}
+						
+						// Show duplicate selection view
+						m.ScheduleIndex = 0
+						m.ViewState = ViewScheduleDuplicate
 						return m, nil
 					}
 					// Other errors - for now just return
@@ -58,7 +137,7 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 				}
 			}
 
-			// Success - load all schedules and show list
+			// Success - reload schedules
 			allSchedules, err := schedule.GetAllSchedules()
 			if err != nil {
 				allSchedules = []schedule.Schedule{}
@@ -76,8 +155,44 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 				m.ScheduleTimerNames = append(m.ScheduleTimerNames, s.TimerName)
 			}
 
-			m.ViewState = ViewScheduleList
-			m.ScheduleIndex = 0 // Reset to first item
+			// If we were editing from duplicate view, reload duplicates and go back there
+			if fromDuplicateView {
+				// Reload duplicate schedules
+				m.DuplicateSchedules = []ScheduleData{}
+				m.DuplicateTimerNames = []string{}
+				if m.ScheduleData != nil {
+					for _, s := range allSchedules {
+						if s.Engine == m.ScheduleData.Engine {
+							// Check if any database matches
+							hasConflict := false
+							for _, db := range m.ScheduleData.Databases {
+								for _, scheduledDB := range s.Databases {
+									if db == scheduledDB {
+										hasConflict = true
+										break
+									}
+								}
+								if hasConflict {
+									break
+								}
+							}
+							if hasConflict {
+								m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
+									Engine:    s.Engine,
+									Databases: s.Databases,
+									Time:      s.Time,
+								})
+								m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
+							}
+						}
+					}
+				}
+				m.ViewState = ViewScheduleDuplicate
+				m.ScheduleIndex = 0
+			} else {
+				m.ViewState = ViewScheduleList
+				m.ScheduleIndex = 0 // Reset to first item
+			}
 			return m, nil
 
 		case "esc":
@@ -103,7 +218,8 @@ func (m TUIModel) viewScheduleConfirm() string {
 	renderHeader(&b, m.Mode)
 
 	// Check if we're editing or creating
-	isEditing := len(m.ScheduleTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.ScheduleTimerNames)
+	isEditing := (len(m.ScheduleTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.ScheduleTimerNames)) ||
+		(len(m.DuplicateTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.DuplicateTimerNames))
 	
 	if isEditing {
 		b.WriteString(SectionTitleStyle.Render("Confirm Schedule Update") + "\n\n")
