@@ -38,8 +38,10 @@ func main() {
                 runDeleteSchedule()
         case "cleanup":
                 runCleanup()
-        case "--version", "-v":
-                fmt.Println(version.Version)
+	case "--version", "-v":
+		fmt.Printf("Version: %s\n", version.Version)
+		fmt.Printf("Commit: %s\n", version.Commit)
+		fmt.Printf("Build Time: %s\n", version.BuildTime)
         default:
                 printHelp()
                 os.Exit(1)

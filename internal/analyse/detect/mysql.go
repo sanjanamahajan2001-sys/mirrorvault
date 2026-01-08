@@ -50,4 +50,3 @@ func DetectMySQL() *model.Database {
 		Names:        dbs,
 	}
 }
-

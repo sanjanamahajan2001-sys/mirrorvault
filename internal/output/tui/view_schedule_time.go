@@ -27,12 +27,12 @@ func (m TUIModel) updateScheduleTime(msg tea.Msg) (TUIModel, tea.Cmd) {
 			}
 
 			m.ScheduleTime = normalizedTime
-			
+
 			// Update schedule data with normalized time
 			if m.ScheduleData != nil {
 				m.ScheduleData.Time = normalizedTime
 			}
-			
+
 			// Move to confirmation view
 			m.ViewState = ViewScheduleConfirm
 			return m, nil
@@ -84,7 +84,7 @@ func (m TUIModel) viewScheduleTime() string {
 
 	// Check if we're editing an existing schedule or creating a new one
 	isEditing := m.ScheduleData != nil && m.ViewState == ViewScheduleTime && len(m.Schedules) > 0
-	
+
 	if isEditing {
 		b.WriteString(SectionTitleStyle.Render("Edit Backup Time") + "\n\n")
 		b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(m.ScheduleData.Engine)))

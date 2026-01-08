@@ -30,7 +30,7 @@ func DetectSQLite() *model.Database {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			
+
 			// Skip system databases that are typically locked
 			isSystemDB := false
 			for _, sysPath := range systemPaths {
@@ -46,7 +46,7 @@ func DetectSQLite() *model.Database {
 			if isSystemDB {
 				return nil
 			}
-			
+
 			if strings.HasSuffix(path, ".db") ||
 				strings.HasSuffix(path, ".sqlite") ||
 				strings.HasSuffix(path, ".sqlite3") {

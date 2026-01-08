@@ -117,14 +117,14 @@ func filterDefaultDatabases(engine string, names []string) []string {
 	if engine != "MongoDB" {
 		return names
 	}
-	
+
 	var filtered []string
 	for _, name := range names {
 		if !isDefaultDatabase(engine, name) {
 			filtered = append(filtered, name)
 		}
 	}
-	
+
 	return filtered
 }
 
@@ -133,13 +133,13 @@ func isDefaultDatabase(engine, name string) bool {
 	if engine != "MongoDB" {
 		return false
 	}
-	
+
 	// Default MongoDB databases created during installation
 	defaultDBs := map[string]bool{
 		"admin":  true,
 		"config": true,
 		"local":  true,
 	}
-	
+
 	return defaultDBs[name]
 }

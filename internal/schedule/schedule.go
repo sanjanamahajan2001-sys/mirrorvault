@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	SchedulesDir     = "/var/lib/mirrorvault"
-	SchedulesFile    = "/var/lib/mirrorvault/schedules.json"
-	SystemdUnitDir   = "/etc/systemd/system"
-	CleanupTimerName = "mirrorvault-cleanup.timer"
+	SchedulesDir       = "/var/lib/mirrorvault"
+	SchedulesFile      = "/var/lib/mirrorvault/schedules.json"
+	SystemdUnitDir     = "/etc/systemd/system"
+	CleanupTimerName   = "mirrorvault-cleanup.timer"
 	CleanupServiceName = "mirrorvault-cleanup.service"
 )
 
@@ -119,20 +119,20 @@ func findMirrorVaultPath() (string, error) {
 			return execPath, nil
 		}
 	}
-	
+
 	// Try common locations
 	commonPaths := []string{
 		"/usr/local/bin/mirrorvault",
 		"/usr/bin/mirrorvault",
 		"/bin/mirrorvault",
 	}
-	
+
 	for _, path := range commonPaths {
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
 	}
-	
+
 	// Try using 'which' command
 	cmd := exec.Command("which", "mirrorvault")
 	output, err := cmd.Output()
@@ -142,7 +142,7 @@ func findMirrorVaultPath() (string, error) {
 			return path, nil
 		}
 	}
-	
+
 	// Try using 'whereis' command
 	cmd = exec.Command("whereis", "-b", "mirrorvault")
 	output, err = cmd.Output()
@@ -152,7 +152,7 @@ func findMirrorVaultPath() (string, error) {
 			return parts[1], nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("mirrorvault binary not found. Please install it to /usr/local/bin/ or ensure it's in PATH")
 }
 
@@ -163,7 +163,7 @@ func CreateSystemdTimer(schedule Schedule) error {
 	if err != nil {
 		return fmt.Errorf("failed to find mirrorvault binary: %w", err)
 	}
-	
+
 	// Parse time (HH:MM format)
 	timeParts := strings.Split(schedule.Time, ":")
 	if len(timeParts) != 2 {
@@ -178,7 +178,7 @@ func CreateSystemdTimer(schedule Schedule) error {
 
 	// Build databases list for the command
 	dbList := strings.Join(schedule.Databases, " ")
-	
+
 	// Create timer unit content
 	timerContent := fmt.Sprintf(`[Unit]
 Description=MirrorVault daily backup for %s databases: %s
@@ -328,15 +328,15 @@ func RemoveSchedule(timerName string) error {
 			// Stop and disable the timer
 			exec.Command("sudo", "systemctl", "stop", timerName).Run()
 			exec.Command("sudo", "systemctl", "disable", timerName).Run()
-			
+
 			// Remove timer and service files
 			timerPath := filepath.Join(SystemdUnitDir, timerName)
 			serviceName := strings.Replace(timerName, ".timer", ".service", 1)
 			servicePath := filepath.Join(SystemdUnitDir, serviceName)
-			
+
 			os.Remove(timerPath)
 			os.Remove(servicePath)
-			
+
 			// Reload systemd
 			exec.Command("sudo", "systemctl", "daemon-reload").Run()
 		} else {
@@ -384,27 +384,27 @@ func UpdateScheduleTime(timerName string, newTime string) error {
 	for i := range schedules {
 		if schedules[i].TimerName == timerName {
 			found = true
-			
+
 			// Stop and disable old timer
 			exec.Command("sudo", "systemctl", "stop", timerName).Run()
 			exec.Command("sudo", "systemctl", "disable", timerName).Run()
-			
+
 			// Remove old timer and service files
 			timerPath := filepath.Join(SystemdUnitDir, timerName)
 			serviceName := strings.Replace(timerName, ".timer", ".service", 1)
 			servicePath := filepath.Join(SystemdUnitDir, serviceName)
 			os.Remove(timerPath)
 			os.Remove(servicePath)
-			
+
 			// Update time and regenerate timer name
 			schedules[i].Time = newTime
 			schedules[i].TimerName = GenerateTimerName(schedules[i].Engine, schedules[i].Databases, newTime)
-			
+
 			// Create new systemd timer with updated time
 			if err := CreateSystemdTimer(schedules[i]); err != nil {
 				return fmt.Errorf("failed to create updated timer: %w", err)
 			}
-			
+
 			break
 		}
 	}

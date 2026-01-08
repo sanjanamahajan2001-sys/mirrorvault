@@ -72,7 +72,7 @@ func (m TUIModel) viewScheduleList() string {
 			if i > 0 {
 				b.WriteString("\n" + DividerStyle.Render(strings.Repeat("─", 44)) + "\n\n")
 			}
-			
+
 			// Highlight selected schedule
 			cursor := "  "
 			style := ItemStyle
@@ -80,7 +80,7 @@ func (m TUIModel) viewScheduleList() string {
 				cursor = "> "
 				style = style.Foreground(lipgloss.Color("#89b4fa"))
 			}
-			
+
 			b.WriteString(cursor + style.Render(fmt.Sprintf("Engine: %s", EngineNameStyle.Render(sched.Engine))) + "\n")
 			b.WriteString("  " + style.Render(fmt.Sprintf("Databases: %s", strings.Join(sched.Databases, ", "))) + "\n")
 			b.WriteString("  " + style.Render(fmt.Sprintf("Time: %s", sched.Time)) + "\n")
@@ -88,7 +88,7 @@ func (m TUIModel) viewScheduleList() string {
 	}
 
 	b.WriteString("\n")
-	
+
 	// Show different footer based on whether schedules exist
 	if len(m.Schedules) > 0 {
 		b.WriteString(FooterStyle.Render(" ↑↓ navigate    E edit time    D delete    Enter/Q exit "))

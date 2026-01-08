@@ -26,13 +26,13 @@ func (m TUIModel) updateScheduleDeleteConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 					m.PendingDeleteTimerName = ""
 					return m, nil
 				}
-				
+
 				// Reload schedules
 				allSchedules, err := schedule.GetAllSchedules()
 				if err != nil {
 					allSchedules = []schedule.Schedule{}
 				}
-				
+
 				// Update model
 				m.Schedules = []ScheduleData{}
 				m.ScheduleTimerNames = []string{}
@@ -44,7 +44,7 @@ func (m TUIModel) updateScheduleDeleteConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 					})
 					m.ScheduleTimerNames = append(m.ScheduleTimerNames, s.TimerName)
 				}
-				
+
 				// Clear duplicate data and go to list view
 				m.DuplicateSchedules = []ScheduleData{}
 				m.DuplicateTimerNames = []string{}
@@ -105,7 +105,7 @@ func (m TUIModel) viewScheduleDeleteConfirm() string {
 	if scheduleToDelete != nil {
 		// Write as plain text to ensure left alignment - ensure newline is outside any style
 		b.WriteString("\nSchedule to delete:\n\n")
-		
+
 		b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(scheduleToDelete.Engine)))
 		b.WriteString(fmt.Sprintf("Databases: %s\n", strings.Join(scheduleToDelete.Databases, ", ")))
 		b.WriteString(fmt.Sprintf("Time: %s\n\n", scheduleToDelete.Time))

@@ -29,4 +29,3 @@ func ScanDatabases() model.ScanResult {
 
 	return model.ScanResult{Databases: dbs}
 }
-

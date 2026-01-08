@@ -29,8 +29,8 @@ func (m TUIModel) viewExecute() string {
 
 	// Define widths for the internal columns
 	// The box is 50 wide, minus 3 padding on each side = 44 usable width
-	leftWidth := 30  
-	
+	leftWidth := 30
+
 	for i, item := range m.Exec.Items {
 		if i > 0 && len(m.Exec.Items) > 1 {
 			b.WriteString("\n" + DividerStyle.Render(strings.Repeat("─", 44)) + "\n\n")

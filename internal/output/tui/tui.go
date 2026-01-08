@@ -85,13 +85,13 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "enter" {
 				// Export all selections from all engines
 				selection := m.ExportSelection()
-				
+
 				// If no databases selected, can't proceed
 				if len(selection) == 0 {
 					// Can't create exec state with no databases
 					return m, nil
 				}
-				
+
 				// For ScheduleMode, transition to time input
 				if m.Mode == ScheduleMode {
 					// Get all selected engines and their databases
@@ -101,7 +101,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if currentEngine == nil {
 						return m, nil
 					}
-					
+
 					// Get selected databases for current engine
 					selectedDBs := []string{}
 					if dbMap, ok := m.Selection.SelectedDBs[currentEngine.Engine]; ok {
@@ -111,11 +111,11 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
-					
+
 					if len(selectedDBs) == 0 {
 						return m, nil
 					}
-					
+
 					// Create schedule data
 					m.ScheduleData = &ScheduleData{
 						Engine:    currentEngine.Engine,
@@ -126,7 +126,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ViewState = ViewScheduleTime
 					return m, nil
 				}
-				
+
 				// Build ExecState with all selected databases from all engines
 				var allExecItems []ExecItem
 				for engineName, dbNames := range selection {
@@ -138,115 +138,115 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						})
 					}
 				}
-				
+
 				m.Exec = ExecState{
 					Items: allExecItems,
 				}
-					
-					// Build plan and collect credentials before execution
-					if m.Mode == BackupMode {
-						selection := m.ExportSelection()
-						// Debug: check if selection is empty
-						if len(selection) == 0 {
-							for _, item := range m.Exec.Items {
-								EmitExecProgress(
-									item.Engine,
-									item.Database,
-									"",
-									0,
-									"failed",
-									fmt.Errorf("no databases in selection"),
-								)
-							}
-							m.ViewState = ViewExecute
-							m.Exec.Done = true
-							m.Exec.AwaitExit = true
-							return m, execTick()
+
+				// Build plan and collect credentials before execution
+				if m.Mode == BackupMode {
+					selection := m.ExportSelection()
+					// Debug: check if selection is empty
+					if len(selection) == 0 {
+						for _, item := range m.Exec.Items {
+							EmitExecProgress(
+								item.Engine,
+								item.Database,
+								"",
+								0,
+								"failed",
+								fmt.Errorf("no databases in selection"),
+							)
 						}
-						
-						backupPlan, err := plan.Build(m.ScanResult, selection)
-						if err != nil {
-							// If plan building fails, emit error for all databases
-							for _, item := range m.Exec.Items {
-								EmitExecProgress(
-									item.Engine,
-									item.Database,
-									"",
-									0,
-									"failed",
-									fmt.Errorf("failed to build backup plan: %v", err),
-								)
-							}
-							m.ViewState = ViewExecute
-							m.Exec.Done = true
-							m.Exec.AwaitExit = true
-							return m, execTick()
-						}
-						
-						// Collect credentials
-						authCtx := credentials.NewContext()
-						for _, eng := range backupPlan.Engines {
-							if !eng.RequiresAuth {
-								continue
-							}
-							
-							password, err := credentials.Prompt(eng.Engine)
-							if err != nil {
-								// If credential collection fails, emit error for all databases
-								for _, item := range m.Exec.Items {
-									EmitExecProgress(
-										item.Engine,
-										item.Database,
-										"",
-										0,
-										"failed",
-										fmt.Errorf("failed to collect credentials: %v", err),
-									)
-								}
-								m.ViewState = ViewExecute
-								m.Exec.Done = true
-								m.Exec.AwaitExit = true
-								return m, execTick()
-							}
-							
-							authCtx.Set(eng.Engine, password)
-						}
-						
-						m.Plan = backupPlan
-						m.Auth = authCtx
-						
-						// Verify plan is set before starting execution
-						if m.Plan == nil {
-							for _, item := range m.Exec.Items {
-								EmitExecProgress(
-									item.Engine,
-									item.Database,
-									"",
-									0,
-									"failed",
-									fmt.Errorf("plan was nil after building"),
-								)
-							}
-							m.ViewState = ViewExecute
-							m.Exec.Done = true
-							m.Exec.AwaitExit = true
-							return m, execTick()
-						}
-					} else {
-						// Scan mode - no plan needed, just mark as done
-						m.Plan = nil
-						m.Auth = nil
+						m.ViewState = ViewExecute
+						m.Exec.Done = true
+						m.Exec.AwaitExit = true
+						return m, execTick()
 					}
-					
-					// Transition to execution view and start immediately
-					// Don't wait for another key press - start execution right away
-					m.ViewState = ViewExecute
-					// Start execution and begin polling for progress messages
-					// The plan should now be set, so startExecutionCmd will have access to it
-					// Return immediately to start execution - this prevents any buffered
-					// Enter key from password submission from being processed again
-					return m, tea.Batch(startExecutionCmd(m), execTick())
+
+					backupPlan, err := plan.Build(m.ScanResult, selection)
+					if err != nil {
+						// If plan building fails, emit error for all databases
+						for _, item := range m.Exec.Items {
+							EmitExecProgress(
+								item.Engine,
+								item.Database,
+								"",
+								0,
+								"failed",
+								fmt.Errorf("failed to build backup plan: %v", err),
+							)
+						}
+						m.ViewState = ViewExecute
+						m.Exec.Done = true
+						m.Exec.AwaitExit = true
+						return m, execTick()
+					}
+
+					// Collect credentials
+					authCtx := credentials.NewContext()
+					for _, eng := range backupPlan.Engines {
+						if !eng.RequiresAuth {
+							continue
+						}
+
+						password, err := credentials.Prompt(eng.Engine)
+						if err != nil {
+							// If credential collection fails, emit error for all databases
+							for _, item := range m.Exec.Items {
+								EmitExecProgress(
+									item.Engine,
+									item.Database,
+									"",
+									0,
+									"failed",
+									fmt.Errorf("failed to collect credentials: %v", err),
+								)
+							}
+							m.ViewState = ViewExecute
+							m.Exec.Done = true
+							m.Exec.AwaitExit = true
+							return m, execTick()
+						}
+
+						authCtx.Set(eng.Engine, password)
+					}
+
+					m.Plan = backupPlan
+					m.Auth = authCtx
+
+					// Verify plan is set before starting execution
+					if m.Plan == nil {
+						for _, item := range m.Exec.Items {
+							EmitExecProgress(
+								item.Engine,
+								item.Database,
+								"",
+								0,
+								"failed",
+								fmt.Errorf("plan was nil after building"),
+							)
+						}
+						m.ViewState = ViewExecute
+						m.Exec.Done = true
+						m.Exec.AwaitExit = true
+						return m, execTick()
+					}
+				} else {
+					// Scan mode - no plan needed, just mark as done
+					m.Plan = nil
+					m.Auth = nil
 				}
+
+				// Transition to execution view and start immediately
+				// Don't wait for another key press - start execution right away
+				m.ViewState = ViewExecute
+				// Start execution and begin polling for progress messages
+				// The plan should now be set, so startExecutionCmd will have access to it
+				// Return immediately to start execution - this prevents any buffered
+				// Enter key from password submission from being processed again
+				return m, tea.Batch(startExecutionCmd(m), execTick())
+			}
 			return m.updateDBSelect(msg)
 
 		case ViewExecute:

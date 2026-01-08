@@ -2,8 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	tea "github.com/charmbracelet/bubbletea"
+	"strings"
 )
 
 func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -30,12 +30,12 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.Selection.DBIndex >= 0 && m.Selection.DBIndex < len(displayNames) {
 			name := displayNames[m.Selection.DBIndex]
 			engineName := engine.Engine
-			
+
 			// Initialize engine map if it doesn't exist
 			if m.Selection.SelectedDBs[engineName] == nil {
 				m.Selection.SelectedDBs[engineName] = make(map[string]bool)
 			}
-			
+
 			if engine.RequiresAuth {
 				// For auth-enabled engines, only one database allowed
 				// Clear all selections for this engine first
@@ -56,7 +56,9 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m TUIModel) viewDBSelect() string {
 	engine := m.currentEngine()
-	if engine == nil { return "" }
+	if engine == nil {
+		return ""
+	}
 
 	var b strings.Builder
 	b.WriteString(SectionTitleStyle.Render(fmt.Sprintf("Select database(s) for %s", engine.Engine)) + "\n\n")
@@ -66,7 +68,7 @@ func (m TUIModel) viewDBSelect() string {
 
 	for i, name := range displayNames {
 		// Strict spacing: 2 for cursor, 4 for checkbox
-		cursor := "  " 
+		cursor := "  "
 		if i == m.Selection.DBIndex {
 			cursor = "> "
 		}

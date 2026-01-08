@@ -22,7 +22,7 @@ func CreateCleanupService() error {
 	if err != nil {
 		return fmt.Errorf("failed to find mirrorvault binary: %w", err)
 	}
-	
+
 	// Create cleanup service unit
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=MirrorVault backup cleanup - removes backups older than 14 days
@@ -87,14 +87,14 @@ func RunCleanup() error {
 
 	// Clean up both manual backups and daily backups
 	dirs := []string{BackupBaseDir, DailyBackupDir}
-	
+
 	for _, baseDir := range dirs {
 		if err := cleanupDirectory(baseDir, cutoffDate); err != nil {
 			// Log error but continue with other directories
 			fmt.Printf("Warning: error cleaning %s: %v\n", baseDir, err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -110,7 +110,7 @@ func cleanupDirectory(baseDir string, cutoffDate time.Time) error {
 		if path == BackupBaseDir || path == DailyBackupDir {
 			return nil
 		}
-		
+
 		// Skip the daily-backups directory itself (don't delete the directory, just its contents)
 		if path == DailyBackupDir {
 			return nil
@@ -119,7 +119,7 @@ func cleanupDirectory(baseDir string, cutoffDate time.Time) error {
 		// Check if file/directory name contains a date
 		// Format: name_YYYY-MM-DD.ext or name_YYYY-MM-DD/
 		baseName := filepath.Base(path)
-		
+
 		// Extract date from filename (format: *_YYYY-MM-DD.*)
 		dateStr := extractDateFromName(baseName)
 		if dateStr == "" {

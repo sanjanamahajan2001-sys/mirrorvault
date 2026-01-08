@@ -7,11 +7,11 @@ type DatabasePlan struct {
 }
 
 type EnginePlan struct {
-	Engine        string
-	Version       string
-	RequiresAuth  bool
-	Databases     []DatabasePlan
-	OutputDir     string
+	Engine       string
+	Version      string
+	RequiresAuth bool
+	Databases    []DatabasePlan
+	OutputDir    string
 }
 
 type BackupPlan struct {

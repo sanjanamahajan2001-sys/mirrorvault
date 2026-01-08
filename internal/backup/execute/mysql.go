@@ -59,7 +59,7 @@ func runMySQL(
 				"sudo",
 				"mysqldump",
 				"-u", "root",
-				"-p" + pwd,
+				"-p"+pwd,
 				db.Name,
 			)
 		} else {
