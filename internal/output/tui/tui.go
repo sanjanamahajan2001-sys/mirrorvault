@@ -15,6 +15,9 @@ func (m TUIModel) Init() tea.Cmd {
 	if m.ViewState == ViewExecute {
 		return startExecutionCmd(m)
 	}
+	if m.ViewState == ViewRestoreProgress {
+		return startRestoreCmd(m)
+	}
 	return nil
 }
 
@@ -52,12 +55,32 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 
+	case tea.WindowSizeMsg:
+		m.TerminalWidth = msg.Width
+		m.TerminalHeight = msg.Height
+		return m, nil
+
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
+		// Only handle global quit for ctrl+c, let views handle 'q' themselves
+		// This allows 'q' to be typed in text input fields
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
 
 		switch m.ViewState {
+
+		case ViewRestoreSelectEngine:
+			return m.updateRestoreSelectEngine(msg)
+		case ViewRestoreSelectDB:
+			return m.updateRestoreSelectDB(msg)
+		case ViewRestoreDumpPath:
+			return m.updateRestoreDumpPath(msg)
+		case ViewRestoreConfirm:
+			return m.updateRestoreConfirm(msg)
+		case ViewRestoreProgress:
+			return m.updateRestoreProgress(msg)
+		case ViewRestoreHistory:
+			return m.updateRestoreHistory(msg)
 
 		case ViewScan:
 			// In ScanMode, Enter should do nothing - only allow exit
@@ -271,6 +294,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ViewState == ViewExecute {
 			return m.updateExecute(msg)
 		}
+		// Handle restore progress messages
+		if m.ViewState == ViewRestoreProgress {
+			return m.updateRestoreProgressMsg(msg)
+		}
 	}
 
 	return m, nil
@@ -278,6 +305,18 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m TUIModel) View() string {
 	switch m.ViewState {
+	case ViewRestoreSelectEngine:
+		return m.viewRestoreSelectEngine()
+	case ViewRestoreSelectDB:
+		return m.viewRestoreSelectDB()
+	case ViewRestoreDumpPath:
+		return m.viewRestoreDumpPath()
+	case ViewRestoreConfirm:
+		return m.viewRestoreConfirm()
+	case ViewRestoreProgress:
+		return m.viewRestoreProgress()
+	case ViewRestoreHistory:
+		return m.viewRestoreHistory()
 	case ViewSelectEngine:
 		return m.viewEngineSelect()
 	case ViewSelectDB:

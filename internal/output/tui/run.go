@@ -9,11 +9,19 @@ import (
 )
 
 func RunWithModel(scan model.ScanResult, mode Mode) (TUIModel, bool, error) {
+	initialView := ViewScan
+	if mode == RestoreMode {
+		initialView = ViewRestoreSelectEngine
+	}
+	
 	m := TUIModel{
-		ScanResult: scan,
-		Mode:       mode,
-		ViewState:  ViewScan,
-		Selection:  NewSelectionState(),
+		ScanResult:        scan,
+		Mode:              mode,
+		ViewState:         initialView,
+		Selection:         NewSelectionState(),
+		TerminalWidth:     80,  // Default width
+		TerminalHeight:    24,  // Default height
+		RestoreScrollOffset: 0,
 	}
 
 	p := tea.NewProgram(

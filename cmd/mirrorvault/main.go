@@ -11,6 +11,7 @@ import (
         "mirrorvault/internal/backup/plan"
         "mirrorvault/internal/output"
         "mirrorvault/internal/output/tui"
+        restorehistory "mirrorvault/internal/restore/history"
         "mirrorvault/internal/schedule"
         "mirrorvault/internal/version"
         "mirrorvault/pkg/model"
@@ -30,6 +31,10 @@ func main() {
                 runScanMode()
         case "backup":
                 runBackupMode()
+        case "restore":
+                runRestoreMode()
+        case "restore-history":
+                runRestoreHistory()
         case "schedule-daily":
                 runScheduleDailyMode()
         case "list-schedules":
@@ -325,12 +330,126 @@ func runDeleteSchedule() {
         fmt.Printf("Schedule %s removed successfully\n", timerName)
 }
 
+func runRestoreMode() {
+        scanResult := analyse.ScanDatabases()
+
+        if term.IsTerminal(int(os.Stdout.Fd())) {
+                // TUI mode: everything is handled inside the TUI
+                _, _, err := tui.RunWithModel(scanResult, tui.RestoreMode)
+                if err != nil {
+                        return
+                }
+                return
+        }
+
+        // Non-TUI fallback not implemented for restore
+        fmt.Println("restore requires an interactive terminal")
+}
+
+func runRestoreHistory() {
+        if term.IsTerminal(int(os.Stdout.Fd())) {
+                // Load restore history
+                histories, err := restorehistory.LoadRestoreHistory()
+                if err != nil {
+                        fmt.Printf("Error loading restore history: %v\n", err)
+                        os.Exit(1)
+                }
+
+                // Convert to TUI format
+                historyItems := make([]*tui.RestoreHistoryItem, len(histories))
+                for i, h := range histories {
+                        historyItems[i] = &tui.RestoreHistoryItem{
+                                Timestamp:        h.Timestamp.Format("2006-01-02 15:04:05"),
+                                Engine:           h.Engine,
+                                Database:         h.Database,
+                                DumpPath:         h.DumpPath,
+                                DumpFormat:       h.DumpFormat,
+                                Compressed:       h.Compressed,
+                                MultiDB:          h.MultiDB,
+                                PreRestoreBackup: h.PreRestoreBackup,
+                                Success:          h.Success,
+                                RolledBack:       h.RolledBack,
+                                Error:            h.Error,
+                                LogFile:          h.LogFile,
+                        }
+                }
+
+                // Create TUI model
+                model := tui.TUIModel{
+                        RestoreHistory:         historyItems,
+                        RestoreHistoryIndex:    0,
+                        RestoreHistoryScrollOffset: 0,
+                        ViewState:             tui.ViewRestoreHistory,
+                        Mode:                  tui.RestoreMode,
+                        Selection:             tui.NewSelectionState(),
+                        TerminalWidth:         80,
+                        TerminalHeight:        24,
+                }
+
+                // Run TUI
+                p := tea.NewProgram(model, tea.WithAltScreen())
+                if _, err := p.Run(); err != nil {
+                        fmt.Printf("Error: %v\n", err)
+                        return
+                }
+                return
+        }
+
+        // Non-TUI mode: simple text output
+        histories, err := restorehistory.LoadRestoreHistory()
+        if err != nil {
+                fmt.Printf("Error loading restore history: %v\n", err)
+                os.Exit(1)
+        }
+
+        if len(histories) == 0 {
+                fmt.Println("No restore operations found.")
+                return
+        }
+
+        fmt.Println("Restore History:")
+        fmt.Println("===============")
+        for i, h := range histories {
+                if i > 0 {
+                        fmt.Println()
+                }
+                fmt.Printf("Restore #%d - %s\n", i+1, h.Timestamp.Format("2006-01-02 15:04:05"))
+                fmt.Printf("  Engine: %s\n", h.Engine)
+                fmt.Printf("  Database: %s\n", h.Database)
+                fmt.Printf("  Dump: %s\n", h.DumpPath)
+                fmt.Printf("  Format: %s", h.DumpFormat)
+                if h.Compressed {
+                        fmt.Printf(" (compressed)")
+                }
+                if h.MultiDB {
+                        fmt.Printf(" (multi-DB)")
+                }
+                fmt.Println()
+                if h.PreRestoreBackup != "" {
+                        fmt.Printf("  Pre-Restore Backup: %s\n", h.PreRestoreBackup)
+                }
+                if h.Success {
+                        fmt.Printf("  Status: ✓ SUCCESS\n")
+                } else {
+                        fmt.Printf("  Status: ✗ FAILED\n")
+                        if h.Error != "" {
+                                fmt.Printf("  Error: %s\n", h.Error)
+                        }
+                }
+                if h.RolledBack {
+                        fmt.Printf("  Rolled Back: Yes\n")
+                }
+        }
+}
+
 func printHelp() {
         fmt.Println(`MirrorVault — Secure Database Backup Agent
 
 Usage:
   mirrorvault scan
   mirrorvault backup
+  mirrorvault restore
+  mirrorvault restore-history
   mirrorvault schedule-daily
   mirrorvault list-schedules
   mirrorvault delete-schedule <timer-name>
