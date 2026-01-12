@@ -4,6 +4,8 @@ import (
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"strings"
+
+	"mirrorvault/pkg/model"
 )
 
 func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -13,16 +15,21 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
+
 	switch msg.String() {
 	case "up":
 		if m.Selection.DBIndex > 0 {
 			m.Selection.DBIndex--
+			// Adjust scroll to keep selected item visible
+			m.adjustDBSelectScroll(displayNames, engine)
 		}
 	case "down":
 		// Use filtered names for display, but check against full list
-		displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
 		if m.Selection.DBIndex < len(displayNames)-1 {
 			m.Selection.DBIndex++
+			// Adjust scroll to keep selected item visible
+			m.adjustDBSelectScroll(displayNames, engine)
 		}
 	case " ":
 		// Get the actual database name from the filtered display list
@@ -54,6 +61,42 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// adjustDBSelectScroll adjusts the scroll offset to keep the selected item visible
+func (m *TUIModel) adjustDBSelectScroll(displayNames []string, engine *model.Database) {
+	// Calculate available height for database list
+	// Reserve space for: header (2 lines), auth message (2 lines if shown), footer (1 line)
+	headerHeight := 2
+	footerHeight := 1
+	authMessageHeight := 0
+	if engine != nil && engine.RequiresAuth {
+		authMessageHeight = 2
+	}
+	availableHeight := m.TerminalHeight - headerHeight - footerHeight - authMessageHeight - 1
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+
+	maxScroll := len(displayNames) - availableHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+
+	// Ensure selected item is visible
+	if m.Selection.DBIndex < m.DBSelectScrollOffset {
+		m.DBSelectScrollOffset = m.Selection.DBIndex
+	} else if m.Selection.DBIndex >= m.DBSelectScrollOffset+availableHeight {
+		m.DBSelectScrollOffset = m.Selection.DBIndex - availableHeight + 1
+	}
+
+	// Clamp scroll offset
+	if m.DBSelectScrollOffset > maxScroll {
+		m.DBSelectScrollOffset = maxScroll
+	}
+	if m.DBSelectScrollOffset < 0 {
+		m.DBSelectScrollOffset = 0
+	}
+}
+
 func (m TUIModel) viewDBSelect() string {
 	engine := m.currentEngine()
 	if engine == nil {
@@ -66,7 +109,45 @@ func (m TUIModel) viewDBSelect() string {
 	// Filter default databases for display (but keep them available for backup)
 	displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
 
-	for i, name := range displayNames {
+	// Calculate available height for database list
+	// Reserve space for: header (2 lines), auth message (2 lines if shown), footer (1 line)
+	headerHeight := 2
+	footerHeight := 1
+	authMessageHeight := 0
+	if engine.RequiresAuth {
+		authMessageHeight = 2
+	}
+	availableHeight := m.TerminalHeight - headerHeight - footerHeight - authMessageHeight - 1 // -1 for safety margin
+
+	// Ensure available height is at least 1
+	if availableHeight < 1 {
+		availableHeight = 1
+	}
+
+	// Adjust scroll offset (this ensures it's always valid)
+	maxScroll := len(displayNames) - availableHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+
+	// Clamp scroll offset to valid range
+	if m.DBSelectScrollOffset > maxScroll {
+		m.DBSelectScrollOffset = maxScroll
+	}
+	if m.DBSelectScrollOffset < 0 {
+		m.DBSelectScrollOffset = 0
+	}
+
+	// Determine which items to show
+	startIdx := m.DBSelectScrollOffset
+	endIdx := startIdx + availableHeight
+	if endIdx > len(displayNames) {
+		endIdx = len(displayNames)
+	}
+
+	// Render visible items
+	for i := startIdx; i < endIdx; i++ {
+		name := displayNames[i]
 		// Strict spacing: 2 for cursor, 4 for checkbox
 		cursor := "  "
 		if i == m.Selection.DBIndex {
@@ -86,6 +167,14 @@ func (m TUIModel) viewDBSelect() string {
 		b.WriteString("\n" + AuthStyle.Render("! Auth enabled: only ONE database allowed") + "\n")
 	}
 
-	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Space select • Enter confirm • Esc back • Ctrl+C exit "))
+	// Add scroll indicator if needed
+	var footerText string
+	if len(displayNames) > availableHeight {
+		footerText = fmt.Sprintf(" ↑/↓ move • Space select • Enter confirm • Esc back • Ctrl+C exit [%d/%d]", m.Selection.DBIndex+1, len(displayNames))
+	} else {
+		footerText = " ↑/↓ move • Space select • Enter confirm • Esc back • Ctrl+C exit "
+	}
+
+	b.WriteString("\n" + FooterStyle.Render(footerText))
 	return b.String()
 }

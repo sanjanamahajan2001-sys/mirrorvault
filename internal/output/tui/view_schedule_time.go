@@ -56,6 +56,7 @@ func (m TUIModel) updateScheduleTime(msg tea.Msg) (TUIModel, tea.Cmd) {
 				// Creating new - go back to DB selection
 				m.ScheduleTime = ""
 				m.ViewState = ViewSelectDB
+				m.DBSelectScrollOffset = 0 // Reset scroll when entering DB selection
 			}
 			return m, nil
 

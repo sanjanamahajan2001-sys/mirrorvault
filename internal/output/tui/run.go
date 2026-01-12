@@ -22,6 +22,7 @@ func RunWithModel(scan model.ScanResult, mode Mode) (TUIModel, bool, error) {
 		TerminalWidth:     80,  // Default width
 		TerminalHeight:    24,  // Default height
 		RestoreScrollOffset: 0,
+		DBSelectScrollOffset: 0,
 	}
 
 	p := tea.NewProgram(

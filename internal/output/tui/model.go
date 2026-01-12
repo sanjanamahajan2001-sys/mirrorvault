@@ -86,6 +86,9 @@ type TUIModel struct {
     RestoreHistoryIndex int          // Currently selected history index
     RestoreHistoryScrollOffset int    // Scroll offset for history view
 
+    // Database selection scrolling
+    DBSelectScrollOffset int          // Scroll offset for database selection view
+
     Ready bool
     Exit  bool
 }

@@ -21,6 +21,8 @@ func (m TUIModel) updateEngineSelect(msg tea.KeyMsg) (TUIModel, tea.Cmd) {
 		}
 	case "enter":
 		m.ViewState = ViewSelectDB
+		m.DBSelectScrollOffset = 0 // Reset scroll when entering DB selection
+		m.Selection.DBIndex = 0    // Reset selection index
 	case "q", "ctrl+c":
 		m.Exit = true
 		return m, tea.Quit

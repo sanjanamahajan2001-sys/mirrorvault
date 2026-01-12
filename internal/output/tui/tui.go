@@ -101,6 +101,8 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter":
 				m.ViewState = ViewSelectDB
+				m.DBSelectScrollOffset = 0 // Reset scroll when entering DB selection
+				m.Selection.DBIndex = 0    // Reset selection index
 			}
 			return m, nil
 
