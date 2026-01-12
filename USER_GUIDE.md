@@ -288,7 +288,6 @@ mirrorvault schedule-daily          # Schedule daily backups
 mirrorvault list-schedules          # List all schedules
 mirrorvault delete-schedule <name>  # Delete a schedule
 mirrorvault delete-schedule --all   # Delete all schedules
-mirrorvault fix-timers              # Fix timer dependencies
 mirrorvault cleanup                 # Manual cleanup
 mirrorvault --version               # Show version
 ```
