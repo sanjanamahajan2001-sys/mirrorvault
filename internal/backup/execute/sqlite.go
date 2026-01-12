@@ -98,19 +98,63 @@ func runSQLite(
 			done <- cmd.Wait()
 		}()
 
-		// Wait for either completion or timeout (5 seconds)
+		// Wait for either completion or timeout (30 seconds for large databases)
 		select {
 		case err := <-done:
 			_ = f.Close()
 			if err != nil {
 				// Remove incomplete file on error
 				_ = os.Remove(outFile)
-				errMsg := fmt.Errorf("sqlite3 backup failed: %v", err)
-				if stderr.Len() > 0 {
-					errMsg = fmt.Errorf("sqlite3 backup failed: %v\n%s", err, stderr.String())
+				
+				stderrStr := stderr.String()
+				// Check if it's a database lock or corruption error
+				isLockError := strings.Contains(stderrStr, "locked") ||
+				               strings.Contains(stderrStr, "database is locked") ||
+				               strings.Contains(stderrStr, "busy")
+				isCorruptError := strings.Contains(stderrStr, "corrupt") ||
+				                  strings.Contains(stderrStr, "malformed")
+				
+				// Try fallback with different approach if it's a lock error
+				if isLockError {
+					// Retry with a small delay and different approach
+					time.Sleep(1 * time.Second)
+					f2, err2 := os.Create(outFile)
+					if err2 != nil {
+						errMsg := fmt.Errorf("sqlite3 backup failed: %v\n%s\n(Retry also failed: %v)", err, stderrStr, err2)
+						onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
+						return errMsg
+					}
+					
+					var cmd2 *exec.Cmd
+					var stderr2 bytes.Buffer
+					// Try without readonly flag (might help with some lock issues)
+					cmd2 = exec.Command("sqlite3", "-batch", dbPath, ".dump")
+					cmd2.Stdout = f2
+					cmd2.Stderr = io.MultiWriter(&stderr2, os.Stderr)
+					
+					if err2 := cmd2.Run(); err2 != nil {
+						_ = f2.Close()
+						_ = os.Remove(outFile)
+						errMsg := fmt.Errorf("sqlite3 backup failed (tried readonly and normal mode):\n1. Readonly: %v\n%s\n2. Normal: %v\n%s", 
+							err, stderrStr, err2, stderr2.String())
+						onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
+						return errMsg
+					}
+					
+					_ = f2.Close()
+					f = f2
+				} else if isCorruptError {
+					errMsg := fmt.Errorf("sqlite3 backup failed: database appears to be corrupted: %v\n%s", err, stderrStr)
+					onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
+					return errMsg
+				} else {
+					errMsg := fmt.Errorf("sqlite3 backup failed: %v", err)
+					if stderr.Len() > 0 {
+						errMsg = fmt.Errorf("sqlite3 backup failed: %v\n%s", err, stderr.String())
+					}
+					onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
+					return errMsg
 				}
-				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
-				return errMsg
 			}
 			// Success - get file size and report done
 			info, _ := os.Stat(outFile)
@@ -126,7 +170,7 @@ func runSQLite(
 				"done",
 				nil,
 			)
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			// Timeout - kill the process
 			_ = f.Close()
 			if cmd.Process != nil {
@@ -137,7 +181,7 @@ func runSQLite(
 			}
 			// Remove the incomplete file
 			_ = os.Remove(outFile)
-			errMsg := fmt.Errorf("Backup timed out after 5 seconds. The database may be locked by another process. Try closing applications that might be using this database: %s", dbPath)
+			errMsg := fmt.Errorf("Backup timed out after 30 seconds. The database may be locked by another process or very large. Try closing applications that might be using this database: %s", dbPath)
 			onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
 			return errMsg
 		}

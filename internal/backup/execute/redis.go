@@ -1,6 +1,7 @@
 package execute
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -70,12 +71,88 @@ func runRedis(
 			)
 		}
 
-		cmd.Stderr = os.Stderr
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
 
-		// Run SAVE command
-		if err := cmd.Run(); err != nil {
-			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
-			return err
+		// Run SAVE command with timeout handling
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Run()
+		}()
+
+		// Wait for either completion or timeout (60 seconds for large datasets)
+		select {
+		case err := <-done:
+			if err != nil {
+				stderrStr := stderr.String()
+				// Try fallback with BGSAVE (non-blocking) if SAVE fails
+				if strings.Contains(stderrStr, "timeout") || strings.Contains(stderrStr, "connection") {
+					// Try BGSAVE as fallback
+					var bgsaveCmd *exec.Cmd
+					if engine.RequiresAuth {
+						pwd, _ := creds.Get("Redis")
+						bgsaveCmd = exec.Command("redis-cli", "-a", pwd, "BGSAVE")
+					} else {
+						bgsaveCmd = exec.Command("redis-cli", "BGSAVE")
+					}
+					
+					var bgsaveStderr bytes.Buffer
+					bgsaveCmd.Stderr = io.MultiWriter(&bgsaveStderr, os.Stderr)
+					
+					if err2 := bgsaveCmd.Run(); err2 == nil {
+						// Wait a bit for BGSAVE to complete
+						time.Sleep(2 * time.Second)
+						// Check if save is in progress
+						var lastsaveCmd *exec.Cmd
+						if engine.RequiresAuth {
+							pwd, _ := creds.Get("Redis")
+							lastsaveCmd = exec.Command("redis-cli", "-a", pwd, "LASTSAVE")
+						} else {
+							lastsaveCmd = exec.Command("redis-cli", "LASTSAVE")
+						}
+						lastsaveCmd.Run() // Just trigger, don't check error
+					} else {
+						errMsg := fmt.Errorf("Redis SAVE failed: %v\n%s\nBGSAVE fallback also failed: %v\n%s", 
+							err, stderrStr, err2, bgsaveStderr.String())
+						onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+						return errMsg
+					}
+				} else {
+					errMsg := fmt.Errorf("Redis SAVE failed: %v", err)
+					if stderr.Len() > 0 {
+						errMsg = fmt.Errorf("Redis SAVE failed: %v\n%s", err, stderr.String())
+					}
+					onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+					return errMsg
+				}
+			}
+		case <-time.After(60 * time.Second):
+			// Timeout - kill the process and try BGSAVE
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			
+			// Try BGSAVE as fallback
+			var bgsaveCmd *exec.Cmd
+			if engine.RequiresAuth {
+				pwd, _ := creds.Get("Redis")
+				bgsaveCmd = exec.Command("redis-cli", "-a", pwd, "BGSAVE")
+			} else {
+				bgsaveCmd = exec.Command("redis-cli", "BGSAVE")
+			}
+			
+			var bgsaveStderr bytes.Buffer
+			bgsaveCmd.Stderr = io.MultiWriter(&bgsaveStderr, os.Stderr)
+			
+			if err := bgsaveCmd.Run(); err != nil {
+				errMsg := fmt.Errorf("Redis SAVE timed out after 60 seconds. BGSAVE fallback also failed: %v\n%s", err, bgsaveStderr.String())
+				onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+				return errMsg
+			}
+			
+			// Wait for BGSAVE to complete
+			time.Sleep(5 * time.Second)
 		}
 
 		// Find and copy the dump.rdb file

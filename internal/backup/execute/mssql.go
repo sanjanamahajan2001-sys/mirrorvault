@@ -1,7 +1,9 @@
 package execute
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,11 +82,67 @@ func runMSSQL(
 		// Actually, let's use a better approach - use sqlcmd with scripting
 		// For a proper backup, we should use sqlcmd to script out the database
 		// But for simplicity, let's use sqlcmd to export data
-		cmd.Stderr = os.Stderr
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
 
-		if err := cmd.Run(); err != nil {
-			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
-			return err
+		err := cmd.Run()
+		if err != nil {
+			stderrStr := stderr.String()
+			// Check if it's a connection or data error
+			stderrBytes := []byte(stderrStr)
+			isConnectionError := bytes.Contains(stderrBytes, []byte("connection")) ||
+			                    bytes.Contains(stderrBytes, []byte("timeout")) ||
+			                    bytes.Contains(stderrBytes, []byte("network"))
+			
+			// Try fallback with different connection options
+			if isConnectionError {
+				// Retry with increased timeout
+				var cmd2 *exec.Cmd
+				if engine.RequiresAuth {
+					pwd, _ := creds.Get("MSSQL")
+					cmd2 = exec.Command(
+						"sqlcmd",
+						"-S", "localhost",
+						"-U", "sa",
+						"-P", pwd,
+						"-d", db.Name,
+						"-l", "30", // Login timeout 30 seconds
+						"-Q", fmt.Sprintf("SELECT '-- Backup of database %s' AS Info", db.Name),
+						"-o", outFile,
+						"-W",
+					)
+				} else {
+					cmd2 = exec.Command(
+						"sqlcmd",
+						"-S", "localhost",
+						"-E",
+						"-d", db.Name,
+						"-l", "30",
+						"-Q", fmt.Sprintf("SELECT '-- Backup of database %s' AS Info", db.Name),
+						"-o", outFile,
+						"-W",
+					)
+				}
+				
+				var stderr2 bytes.Buffer
+				cmd2.Stderr = io.MultiWriter(&stderr2, os.Stderr)
+				
+				if err2 := cmd2.Run(); err2 != nil {
+					errMsg := fmt.Errorf("sqlcmd failed (tried multiple approaches):\n1. Standard: %v\n%s\n2. With timeout: %v\n%s", 
+						err, stderrStr, err2, stderr2.String())
+					onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+					return errMsg
+				}
+				// Fallback succeeded
+			} else {
+				// Not a connection error, return original error
+				errMsg := fmt.Errorf("sqlcmd failed: %v", err)
+				if stderr.Len() > 0 {
+					errMsg = fmt.Errorf("sqlcmd failed: %v\n%s", err, stderr.String())
+				}
+				onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+				return errMsg
+			}
 		}
 
 		info, _ := os.Stat(outFile)
