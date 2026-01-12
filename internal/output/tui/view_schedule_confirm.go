@@ -295,12 +295,12 @@ func (m TUIModel) viewScheduleConfirm() string {
 	duplicates, _ := schedule.CheckDuplicate(m.ScheduleData.Engine, m.ScheduleData.Databases)
 	if !isEditing && len(duplicates) > 0 {
 		b.WriteString(AuthStyle.Render("Cannot schedule: duplicates detected\n"))
-		b.WriteString(FooterStyle.Render(" ESC back    Q exit "))
+		b.WriteString(FooterStyle.Render(" ESC back    Ctrl+C exit "))
 	} else {
 		if isEditing {
-			b.WriteString(FooterStyle.Render(" Enter confirm update    ESC back to edit    Q exit "))
+			b.WriteString(FooterStyle.Render(" Enter confirm update    ESC back to edit    Ctrl+C exit "))
 		} else {
-			b.WriteString(FooterStyle.Render(" Enter confirm    ESC back to edit    Q exit "))
+			b.WriteString(FooterStyle.Render(" Enter confirm    ESC back to edit    Ctrl+C exit "))
 		}
 	}
 

@@ -123,7 +123,7 @@ func (m TUIModel) viewScheduleTime() string {
 	}
 	b.WriteString(ItemStyle.Render(fmt.Sprintf("Time: %s", inputDisplay)) + "\n\n")
 
-	b.WriteString(FooterStyle.Render(" Enter confirm    ESC back    Q exit "))
+	b.WriteString(FooterStyle.Render(" Enter confirm    ESC back    Ctrl+C exit "))
 
 	return b.String()
 }

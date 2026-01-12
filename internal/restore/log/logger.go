@@ -66,8 +66,10 @@ func (l *Logger) write(level, message string) {
 	logLine := fmt.Sprintf("[%s] [%s] %s\n", timestamp, level, message)
 	l.file.WriteString(logLine)
 	
-	// Also print to stdout for immediate feedback
-	fmt.Print(logLine)
+	// Note: We do NOT print to stdout here because when running in Bubble Tea TUI mode,
+	// direct stdout writes interfere with the terminal rendering and cause alignment issues.
+	// Logs are still written to the log file for debugging and history.
+	// If you need to display logs in the TUI, send them through Bubble Tea's message system instead.
 }
 
 func (l *Logger) Close() error {

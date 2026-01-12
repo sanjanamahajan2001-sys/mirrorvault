@@ -41,6 +41,8 @@ func main() {
                 runListSchedules()
         case "delete-schedule":
                 runDeleteSchedule()
+        case "fix-timers":
+                runFixTimers()
         case "cleanup":
                 runCleanup()
 	case "--version", "-v":
@@ -330,6 +332,16 @@ func runDeleteSchedule() {
         fmt.Printf("Schedule %s removed successfully\n", timerName)
 }
 
+func runFixTimers() {
+        fmt.Println("Fixing existing timer units...")
+        if err := schedule.FixExistingTimers(); err != nil {
+                fmt.Printf("Error fixing timers: %v\n", err)
+                os.Exit(1)
+        }
+        fmt.Println("All timer units have been fixed successfully!")
+        fmt.Println("\nTo verify, run: systemctl list-timers --all | grep mirrorvault")
+}
+
 func runRestoreMode() {
         scanResult := analyse.ScanDatabases()
 
@@ -454,6 +466,7 @@ Usage:
   mirrorvault list-schedules
   mirrorvault delete-schedule <timer-name>
   mirrorvault delete-schedule --all
+  mirrorvault fix-timers
   mirrorvault cleanup
 `)
 }

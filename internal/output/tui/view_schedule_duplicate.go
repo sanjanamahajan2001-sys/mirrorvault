@@ -103,7 +103,7 @@ func (m TUIModel) viewScheduleDuplicate() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(FooterStyle.Render(" ↑↓ navigate    E edit time    D delete    ESC back    Q exit "))
+	b.WriteString(FooterStyle.Render(" ↑↓ navigate    E edit time    D delete    ESC back    Ctrl+C exit "))
 
 	return b.String()
 }

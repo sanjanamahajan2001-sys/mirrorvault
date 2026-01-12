@@ -72,7 +72,7 @@ func (m TUIModel) viewEngineSelect() string {
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, cursor, tile) + "\n")
 	}
 
-	b.WriteString("\n" + FooterStyle.Render(" ↑ ↓ move    Enter select    Q exit "))
+	b.WriteString("\n" + FooterStyle.Render(" ↑ ↓ move    Enter select    Ctrl+C exit "))
 
 	return b.String()
 }

@@ -86,6 +86,6 @@ func (m TUIModel) viewDBSelect() string {
 		b.WriteString("\n" + AuthStyle.Render("! Auth enabled: only ONE database allowed") + "\n")
 	}
 
-	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Space select • Enter confirm • Esc back • Q exit "))
+	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Space select • Enter confirm • Esc back • Ctrl+C exit "))
 	return b.String()
 }

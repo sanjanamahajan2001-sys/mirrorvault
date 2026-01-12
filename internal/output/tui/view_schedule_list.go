@@ -91,7 +91,7 @@ func (m TUIModel) viewScheduleList() string {
 
 	// Show different footer based on whether schedules exist
 	if len(m.Schedules) > 0 {
-		b.WriteString(FooterStyle.Render(" ↑↓ navigate    E edit time    D delete    Enter/Q exit "))
+		b.WriteString(FooterStyle.Render(" ↑↓ navigate    E edit time    D delete    Enter/Ctrl+C exit "))
 	} else {
 		b.WriteString(FooterStyle.Render(" Press Enter to exit "))
 	}

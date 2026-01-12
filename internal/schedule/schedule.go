@@ -181,9 +181,10 @@ func CreateSystemdTimer(schedule Schedule, password string) error {
 	dbList := strings.Join(schedule.Databases, " ")
 	
 	// Create timer unit content
+	// Note: Timer units automatically trigger their corresponding .service unit
+	// No need to explicitly reference the service or cleanup service
 	timerContent := fmt.Sprintf(`[Unit]
 Description=MirrorVault daily backup for %s databases: %s
-Requires=%s
 
 [Timer]
 %s
@@ -191,7 +192,7 @@ Persistent=true
 
 [Install]
 WantedBy=timers.target
-`, schedule.Engine, dbList, CleanupServiceName, onCalendar)
+`, schedule.Engine, dbList, onCalendar)
 
 	// Create service unit content
 	// Set MIRRORVAULT_SCHEDULED=true to use daily-backups directory
@@ -320,6 +321,68 @@ func AddSchedule(engine string, databases []string, time string, password string
 // GetAllSchedules returns all schedules
 func GetAllSchedules() ([]Schedule, error) {
 	return LoadSchedules()
+}
+
+// FixExistingTimers removes the incorrect Requires dependency from all existing timer units
+// This fixes timers that were created before the bug fix
+func FixExistingTimers() error {
+	// Find all mirrorvault timer files (excluding cleanup timer)
+	timerFiles, err := filepath.Glob(filepath.Join(SystemdUnitDir, "mirrorvault-*.timer"))
+	if err != nil {
+		return fmt.Errorf("failed to find timer files: %w", err)
+	}
+
+	fixedCount := 0
+	for _, timerPath := range timerFiles {
+		// Skip cleanup timer - it correctly requires its service
+		if strings.Contains(timerPath, "mirrorvault-cleanup.timer") {
+			continue
+		}
+
+		// Read timer file
+		content, err := os.ReadFile(timerPath)
+		if err != nil {
+			continue // Skip if can't read
+		}
+
+		// Check if it has the incorrect Requires line
+		contentStr := string(content)
+		if !strings.Contains(contentStr, "Requires=mirrorvault-cleanup.service") {
+			continue // Already fixed or doesn't have the issue
+		}
+
+		// Remove the Requires line
+		lines := strings.Split(contentStr, "\n")
+		newLines := []string{}
+		for _, line := range lines {
+			if strings.TrimSpace(line) != "Requires=mirrorvault-cleanup.service" {
+				newLines = append(newLines, line)
+			}
+		}
+
+		// Write back the fixed content
+		newContent := strings.Join(newLines, "\n")
+		if err := os.WriteFile(timerPath, []byte(newContent), 0644); err != nil {
+			continue // Skip if can't write
+		}
+
+		fixedCount++
+
+		// Restart the timer
+		timerName := filepath.Base(timerPath)
+		exec.Command("sudo", "systemctl", "daemon-reload").Run()
+		exec.Command("sudo", "systemctl", "restart", timerName).Run()
+	}
+
+	if fixedCount > 0 {
+		// Reload systemd once after all fixes
+		cmd := exec.Command("sudo", "systemctl", "daemon-reload")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to reload systemd: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // RemoveSchedule removes a schedule by timer name and stops/removes the systemd timer

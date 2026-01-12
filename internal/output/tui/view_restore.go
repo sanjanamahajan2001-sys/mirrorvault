@@ -43,7 +43,7 @@ func (m TUIModel) viewRestoreSelectEngine() string {
 		b.WriteString(fmt.Sprintf("%s%s %s (%s)%s\n", cursor, status, db.Engine, db.DisplayVersion(), auth))
 	}
 
-	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Enter select • Q exit "))
+	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Enter select • Ctrl+C exit "))
 	return b.String()
 }
 
@@ -67,7 +67,7 @@ func (m TUIModel) viewRestoreSelectDB() string {
 		b.WriteString(fmt.Sprintf("%s%s\n", cursor, name))
 	}
 
-	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Enter select • Esc back • Q exit "))
+	b.WriteString("\n" + FooterStyle.Render(" ↑/↓ move • Enter select • Esc back • Ctrl+C exit "))
 	return b.String()
 }
 
@@ -149,7 +149,7 @@ func (m TUIModel) viewRestoreConfirm() string {
 	b.WriteString(NoAuthStyle.Render("⚠ WARNING: This will replace the current database!") + "\n")
 	b.WriteString(NoAuthStyle.Render("A backup will be created before restore.") + "\n\n")
 
-	b.WriteString(FooterStyle.Render(" Enter confirm • Esc back • Q exit "))
+	b.WriteString(FooterStyle.Render(" Enter confirm • Esc back • Ctrl+C exit "))
 	return b.String()
 }
 
@@ -174,14 +174,17 @@ func (m TUIModel) viewRestoreProgress() string {
 	}
 	dumpText := ItemStyle.Render(dumpPath)
 	
-	// Fixed width for info box: 63 chars total, "│ Engine:   " = 11 chars, " │" = 2 chars, so content = 50 chars
+	// Fixed width for info box: label width = 9 chars, content = 50 chars
+	// Line format: │ + space + label (9) + space + content (50) + space + │ = 64 chars total
+	labelWidth := 9
 	infoContentWidth := 50
+	infoBoxWidth := 1 + 1 + labelWidth + 1 + infoContentWidth + 1 + 1 // 64 chars
 	
-	b.WriteString("┌───────────────────────────────────────────────────────────────┐\n")
-	b.WriteString(fmt.Sprintf("│ Engine:   %s │\n", padString(engineText, infoContentWidth)))
-	b.WriteString(fmt.Sprintf("│ Database: %s │\n", padString(dbText, infoContentWidth)))
-	b.WriteString(fmt.Sprintf("│ Dump:     %s │\n", padString(dumpText, infoContentWidth)))
-	b.WriteString("└───────────────────────────────────────────────────────────────┘\n\n")
+	b.WriteString("┌" + strings.Repeat("─", infoBoxWidth-2) + "┐\n")
+	b.WriteString(fmt.Sprintf("│ %s %s │\n", padString("Engine:", labelWidth), padString(engineText, infoContentWidth)))
+	b.WriteString(fmt.Sprintf("│ %s %s │\n", padString("Database:", labelWidth), padString(dbText, infoContentWidth)))
+	b.WriteString(fmt.Sprintf("│ %s %s │\n", padString("Dump:", labelWidth), padString(dumpText, infoContentWidth)))
+	b.WriteString("└" + strings.Repeat("─", infoBoxWidth-2) + "┘\n\n")
 
 	// Progress bar with better formatting
 	progress := m.RestoreProgress
@@ -202,21 +205,23 @@ func (m TUIModel) viewRestoreProgress() string {
 	bar := filledBar + emptyBar
 	percentage := int(progress * 100)
 
-	b.WriteString("Progress: " + bar + fmt.Sprintf(" %d%%\n\n", percentage))
+	// Align labels consistently (8 chars for label width)
+	progressLabelWidth := 8
+	b.WriteString(fmt.Sprintf("%s %s %d%%\n\n", padString("Progress:", progressLabelWidth), bar, percentage))
 
 	// Current step with better formatting
 	if m.RestoreStep != "" {
 		stepStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#f9e2af")).
 			Bold(true)
-		b.WriteString("Step: " + stepStyle.Render(m.RestoreStep) + "\n")
+		b.WriteString(fmt.Sprintf("%s %s\n", padString("Step:", progressLabelWidth), stepStyle.Render(m.RestoreStep)))
 	}
 
 	// Message with better formatting
 	if m.RestoreMessage != "" {
 		msgStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#bac2de"))
-		b.WriteString("Status: " + msgStyle.Render(m.RestoreMessage) + "\n")
+		b.WriteString(fmt.Sprintf("%s %s\n", padString("Status:", progressLabelWidth), msgStyle.Render(m.RestoreMessage)))
 	}
 
 	// Error
@@ -342,14 +347,21 @@ func (m TUIModel) viewRestoreProgress() string {
 				beforeHeader := beforeStyle.Render("BEFORE")
 				afterHeader := afterStyle.Render("AFTER")
 				
-				// Table header width: 66 chars total, "│ Table: " = 8 chars, " │" = 2 chars, so content = 56 chars
-				tableHeaderContentWidth := 56
+				// Property table total width calculation:
+				// Column widths: 24+2, 16+2, 16+2 (content + padding) = 26, 18, 18
+				// Borders: ├ (1) + ┬ (1) + ┬ (1) + ┤ (1) = 4
+				// Total: 26 + 1 + 18 + 1 + 18 + 1 = 65 chars
+				// Actually, let's count: ├ + 26×─ + ┬ + 18×─ + ┬ + 18×─ + ┤ = 1+26+1+18+1+18+1 = 66
+				propTableTotalWidth := 1 + (24+2) + 1 + (16+2) + 1 + (16+2) + 1 // 66 chars
+				// Table header: │ Table: [content] │
+				// "│ Table: " = 9 chars, " │" = 2 chars, so content = 66 - 9 - 2 = 55
+				tableHeaderContentWidth := propTableTotalWidth - 9 - 2 // 55 chars
 				tableNamePadded := padString(tableNameText, tableHeaderContentWidth)
-				tableHeaderBorder := "┌" + strings.Repeat("─", tableHeaderContentWidth+2) + "┐"
+				tableHeaderBorder := "┌" + strings.Repeat("─", propTableTotalWidth-2) + "┐"
 				b.WriteString(tableHeaderBorder + "\n")
 				b.WriteString(fmt.Sprintf("│ Table: %s │\n", tableNamePadded))
 				
-				// Property table borders: 24, 16, 16
+				// Property table borders: 24, 16, 16 - must match table header width
 				propTopBorder := "├" + strings.Repeat("─", 24+2) + "┬" + strings.Repeat("─", 16+2) + "┬" + strings.Repeat("─", 16+2) + "┤"
 				propMidBorder := "├" + strings.Repeat("─", 24+2) + "┼" + strings.Repeat("─", 16+2) + "┼" + strings.Repeat("─", 16+2) + "┤"
 				propBottomBorder := "└" + strings.Repeat("─", 24+2) + "┴" + strings.Repeat("─", 16+2) + "┴" + strings.Repeat("─", 16+2) + "┘"

@@ -22,18 +22,18 @@ func (m TUIModel) viewScan() string {
 	renderDivider(&b)
 	renderSection(&b, "NOSQL DATABASES", model.NoSQL, m.ScanResult)
 
-	qHint := KeyHintStyle.Render("Q")
+	ctrlCHint := KeyHintStyle.Render("Ctrl+C")
 
 	var footerContent string
 	if m.Mode == ScheduleMode {
 		enterHint := KeyHintStyle.Render("ENTER")
-		footerContent = fmt.Sprintf(" %s proceed to schedule-daily backup    %s exit ", enterHint, qHint)
+		footerContent = fmt.Sprintf(" %s proceed to schedule-daily backup    %s exit ", enterHint, ctrlCHint)
 	} else if m.Mode == ScanMode {
 		// Scan mode: only show exit option
-		footerContent = fmt.Sprintf(" %s exit ", qHint)
+		footerContent = fmt.Sprintf(" %s exit ", ctrlCHint)
 	} else {
 		enterHint := KeyHintStyle.Render("ENTER")
-		footerContent = fmt.Sprintf(" %s proceed to backup    %s exit ", enterHint, qHint)
+		footerContent = fmt.Sprintf(" %s proceed to backup    %s exit ", enterHint, ctrlCHint)
 	}
 	b.WriteString("\n" + FooterStyle.Render(footerContent))
 

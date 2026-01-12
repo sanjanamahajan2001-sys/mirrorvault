@@ -115,7 +115,7 @@ func (m TUIModel) viewScheduleDeleteConfirm() string {
 		b.WriteString("Schedule information not available.\n\n")
 	}
 
-	b.WriteString(FooterStyle.Render(" Enter/Y confirm    ESC/N cancel    Q exit "))
+	b.WriteString(FooterStyle.Render(" Enter/Y confirm    ESC/N cancel    Ctrl+C exit "))
 
 	return b.String()
 }
