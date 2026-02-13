@@ -31,6 +31,24 @@ func EmitExecProgress(
 	}
 }
 
+func EmitDriveProgress(
+	engine, db, stage, message, remoteName string,
+	backupSize, accountRemaining, accountTotal int64,
+	err error,
+) {
+	execChan <- driveProgressMsg{
+		Engine:            engine,
+		Database:          db,
+		Stage:             stage,
+		Message:           message,
+		RemoteName:        remoteName,
+		BackupSize:        backupSize,
+		AccountRemaining:  accountRemaining,
+		AccountTotal:      accountTotal,
+		Err:               err,
+	}
+}
+
 func execTick() tea.Cmd {
 	return func() tea.Msg {
 		return <-execChan

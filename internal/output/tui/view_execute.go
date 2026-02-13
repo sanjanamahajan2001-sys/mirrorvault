@@ -61,7 +61,41 @@ func (m TUIModel) viewExecute() string {
 		if item.Status == ExecDone && item.Path != "" {
 			fileInfo := fmt.Sprintf("   ↳ %s (%s)", item.Path, formatBytes(item.Size))
 			b.WriteString(ItemStyle.Render(fileInfo) + "\n")
+			b.WriteString(ItemStyle.Render("   ↳ Validation: OK") + "\n")
 		}
+
+	if item.DriveStatus != DriveNone {
+		driveLine := "   ↳ Drive: "
+		switch item.DriveStatus {
+		case DriveChecking:
+			if item.DriveAccountTotal > 0 {
+				driveLine += fmt.Sprintf("checking free space (%s / %s remaining)", formatBytes(item.DriveAccountRemain), formatBytes(item.DriveAccountTotal))
+			} else {
+				driveLine += "checking free space"
+			}
+		case DriveUploading:
+			driveLine += "uploading backup"
+		case DriveDone:
+			if item.DriveRemoteName != "" {
+				driveLine += fmt.Sprintf("uploaded (%s)", item.DriveRemoteName)
+			} else {
+				driveLine += "uploaded"
+			}
+		case DriveSkipped:
+			if item.DriveMessage != "" {
+				driveLine += "skipped - " + item.DriveMessage
+			} else {
+				driveLine += "skipped"
+			}
+		case DriveFailed:
+			if item.DriveErr != nil {
+				driveLine += "failed - " + item.DriveErr.Error()
+			} else {
+				driveLine += "failed"
+			}
+		}
+		b.WriteString(ItemStyle.Render(driveLine) + "\n")
+	}
 
 		if item.Status == ExecFailed && item.Err != nil {
 			errorMsg := fmt.Sprintf("   ↳ Error: %s", item.Err.Error())

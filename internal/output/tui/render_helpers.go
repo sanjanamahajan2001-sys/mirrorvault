@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"mirrorvault/internal/backup/plan"
 	"mirrorvault/pkg/model"
 
 	"github.com/charmbracelet/lipgloss"
@@ -109,6 +110,21 @@ func renderSection(b *strings.Builder, title string, dbType model.DatabaseType, 
 
 func renderDivider(b *strings.Builder) {
 	b.WriteString(DividerStyle.Render(strings.Repeat("─", 50)) + "\n\n")
+}
+
+func formatDatabaseList(databases []string) string {
+	if len(databases) == 1 && databases[0] == plan.AllDatabasesName {
+		return "All databases"
+	}
+	formatted := make([]string, 0, len(databases))
+	for _, name := range databases {
+		if name == plan.AllDatabasesName {
+			formatted = append(formatted, "All databases")
+		} else {
+			formatted = append(formatted, name)
+		}
+	}
+	return strings.Join(formatted, ", ")
 }
 
 // filterDefaultDatabases filters out default system databases from display

@@ -21,14 +21,14 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 
 			// Check if we're editing an existing schedule (from list view or duplicate view)
 			isEditing := len(m.ScheduleTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.ScheduleTimerNames)
-			
+
 			// Check if we came from duplicate view (duplicate timer names still exist)
 			fromDuplicateView := len(m.DuplicateTimerNames) > 0
-			
+
 			if isEditing {
 				// Update existing schedule
 				timerName := m.ScheduleTimerNames[m.ScheduleIndex]
-				
+
 				if timerName != "" {
 					err := schedule.UpdateScheduleTime(timerName, m.ScheduleData.Time)
 					if err != nil {
@@ -47,7 +47,7 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 					if err != nil {
 						allSchedules = []schedule.Schedule{}
 					}
-					
+
 					// Find conflicting schedules
 					m.DuplicateSchedules = []ScheduleData{}
 					m.DuplicateTimerNames = []string{}
@@ -68,15 +68,16 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 							}
 							if hasConflict {
 								m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
-									Engine:    s.Engine,
-									Databases: s.Databases,
-									Time:      s.Time,
+									Engine:      s.Engine,
+									Databases:   s.Databases,
+									Time:        s.Time,
+									Compression: s.Compression,
 								})
 								m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
 							}
 						}
 					}
-					
+
 					// Show duplicate selection view
 					m.ScheduleIndex = 0
 					m.ViewState = ViewScheduleDuplicate
@@ -94,7 +95,7 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 							break
 						}
 					}
-					
+
 					if requiresAuth {
 						// Prompt for password
 						pwd, err := credentials.Prompt(m.ScheduleData.Engine)
@@ -106,12 +107,13 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 						m.ScheduleData.Password = password
 					}
 				}
-				
+
 				// Add schedule
 				err = schedule.AddSchedule(
 					m.ScheduleData.Engine,
 					m.ScheduleData.Databases,
 					m.ScheduleData.Time,
+					m.ScheduleData.Compression,
 					password,
 				)
 
@@ -123,7 +125,7 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 						if err != nil {
 							allSchedules = []schedule.Schedule{}
 						}
-						
+
 						// Find conflicting schedules
 						m.DuplicateSchedules = []ScheduleData{}
 						m.DuplicateTimerNames = []string{}
@@ -144,15 +146,16 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 								}
 								if hasConflict {
 									m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
-										Engine:    s.Engine,
-										Databases: s.Databases,
-										Time:      s.Time,
+										Engine:      s.Engine,
+										Databases:   s.Databases,
+										Time:        s.Time,
+										Compression: s.Compression,
 									})
 									m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
 								}
 							}
 						}
-						
+
 						// Show duplicate selection view
 						m.ScheduleIndex = 0
 						m.ViewState = ViewScheduleDuplicate
@@ -174,9 +177,10 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 			m.ScheduleTimerNames = []string{}
 			for _, s := range allSchedules {
 				m.Schedules = append(m.Schedules, ScheduleData{
-					Engine:    s.Engine,
-					Databases: s.Databases,
-					Time:      s.Time,
+					Engine:      s.Engine,
+					Databases:   s.Databases,
+					Time:        s.Time,
+					Compression: s.Compression,
 				})
 				m.ScheduleTimerNames = append(m.ScheduleTimerNames, s.TimerName)
 			}
@@ -204,9 +208,10 @@ func (m TUIModel) updateScheduleConfirm(msg tea.Msg) (TUIModel, tea.Cmd) {
 							}
 							if hasConflict {
 								m.DuplicateSchedules = append(m.DuplicateSchedules, ScheduleData{
-									Engine:    s.Engine,
-									Databases: s.Databases,
-									Time:      s.Time,
+									Engine:      s.Engine,
+									Databases:   s.Databases,
+									Time:        s.Time,
+									Compression: s.Compression,
 								})
 								m.DuplicateTimerNames = append(m.DuplicateTimerNames, s.TimerName)
 							}
@@ -246,7 +251,7 @@ func (m TUIModel) viewScheduleConfirm() string {
 	// Check if we're editing or creating
 	isEditing := (len(m.ScheduleTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.ScheduleTimerNames)) ||
 		(len(m.DuplicateTimerNames) > 0 && m.ScheduleIndex >= 0 && m.ScheduleIndex < len(m.DuplicateTimerNames))
-	
+
 	if isEditing {
 		b.WriteString(SectionTitleStyle.Render("Confirm Schedule Update") + "\n\n")
 	} else {
@@ -272,17 +277,22 @@ func (m TUIModel) viewScheduleConfirm() string {
 
 	b.WriteString("Schedule Details:\n\n")
 	b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(m.ScheduleData.Engine)))
-	b.WriteString(fmt.Sprintf("Databases: %s\n", strings.Join(m.ScheduleData.Databases, ", ")))
-	b.WriteString(fmt.Sprintf("Time: %s\n\n", m.ScheduleData.Time))
+	b.WriteString(fmt.Sprintf("Databases: %s\n", formatDatabaseList(m.ScheduleData.Databases)))
+	b.WriteString(fmt.Sprintf("Time: %s\n", m.ScheduleData.Time))
+	formatLabel := "Native"
+	if m.ScheduleData.Compression != "" {
+		formatLabel = fmt.Sprintf("Compressed (%s)", m.ScheduleData.Compression)
+	}
+	b.WriteString(fmt.Sprintf("Format: %s\n\n", formatLabel))
 
 	if isEditing {
-		b.WriteString(fmt.Sprintf("Update %s backup schedule to run at %s:\n", 
+		b.WriteString(fmt.Sprintf("Update %s backup schedule to run at %s:\n",
 			m.ScheduleData.Engine, m.ScheduleData.Time))
 		for _, db := range m.ScheduleData.Databases {
 			b.WriteString(fmt.Sprintf("  • %s\n", db))
 		}
 	} else {
-		b.WriteString(fmt.Sprintf("For %s, the following databases' daily backups will happen at %s:\n", 
+		b.WriteString(fmt.Sprintf("For %s, the following databases' daily backups will happen at %s:\n",
 			m.ScheduleData.Engine, m.ScheduleData.Time))
 		for _, db := range m.ScheduleData.Databases {
 			b.WriteString(fmt.Sprintf("  • %s\n", db))

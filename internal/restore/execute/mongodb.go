@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"mirrorvault/internal/backup/credentials"
+	"mirrorvault/internal/config"
 	"mirrorvault/internal/restore/log"
 	restoreplan "mirrorvault/internal/restore/plan"
 	"mirrorvault/internal/restore/validate"
@@ -34,6 +35,9 @@ func restoreMongoDB(
 		password = pwd
 	}
 
+	user := config.MongoUser()
+	authDB := config.MongoAuthDB()
+
 	// Step 1: Drop existing database
 	onProgress("Preparing database", 0.5, "Dropping existing database...", nil)
 	logger.Info("Dropping existing database")
@@ -46,7 +50,7 @@ func restoreMongoDB(
 
 	var dropCmd *exec.Cmd
 	if restorePlan.RequiresAuth {
-		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()", "--username", "admin", "--password", password, "--authenticationDatabase", "admin")
+		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()", "--username", user, "--password", password, "--authenticationDatabase", authDB)
 	} else {
 		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()")
 	}
@@ -69,15 +73,26 @@ func restoreMongoDB(
 	if !info.IsDir() {
 		// Archive format - mongorestore can handle this directly
 		logger.Info("Detected MongoDB archive format dump")
+		restorePath := dumpPath
+		cleanup := func() {}
+		if dumpInfo.Compressed && dumpInfo.Compression != "gz" {
+			var err error
+			restorePath, cleanup, err = writeDecompressedTempFileMongo(dumpPath, dumpInfo, ".archive")
+			if err != nil {
+				return err
+			}
+		}
+		defer cleanup()
+
 		var restoreCmd *exec.Cmd
 		if restorePlan.RequiresAuth {
 			restoreCmd = exec.Command(
 				"mongorestore",
 				"--archive",
 				"--db", restorePlan.Database,
-				"--username", "admin",
+				"--username", user,
 				"--password", password,
-				"--authenticationDatabase", "admin",
+				"--authenticationDatabase", authDB,
 			)
 		} else {
 			restoreCmd = exec.Command(
@@ -93,7 +108,7 @@ func restoreMongoDB(
 		}
 		
 		// Read from file
-		file, err := os.Open(dumpPath)
+		file, err := os.Open(restorePath)
 		if err != nil {
 			return fmt.Errorf("failed to open archive file: %w", err)
 		}
@@ -144,9 +159,9 @@ func restoreMongoDB(
 				"mongorestore",
 				"--dir", dbDir,
 				"--db", restorePlan.Database,
-				"--username", "admin",
+				"--username", user,
 				"--password", password,
-				"--authenticationDatabase", "admin",
+				"--authenticationDatabase", authDB,
 			)
 		} else {
 			restoreCmd = exec.Command(
@@ -164,9 +179,9 @@ func restoreMongoDB(
 				"mongorestore",
 				"--db", restorePlan.Database,
 				"--dir", dumpPath,
-				"--username", "admin",
+				"--username", user,
 				"--password", password,
-				"--authenticationDatabase", "admin",
+				"--authenticationDatabase", authDB,
 			)
 		} else {
 			restoreCmd = exec.Command(
@@ -219,6 +234,33 @@ func restoreMongoDB(
 	return nil
 }
 
+func writeDecompressedTempFileMongo(dumpPath string, dumpInfo *validate.DumpInfo, ext string) (string, func(), error) {
+	reader, closeReader, err := validate.OpenDecompressedReader(dumpPath, dumpInfo)
+	if err != nil {
+		return "", func() {}, err
+	}
+
+	tmpFile, err := os.CreateTemp("", "mirrorvault_restore_*"+ext)
+	if err != nil {
+		_ = closeReader()
+		return "", func() {}, err
+	}
+
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		_ = tmpFile.Close()
+		_ = closeReader()
+		_ = os.Remove(tmpFile.Name())
+		return "", func() {}, err
+	}
+	_ = tmpFile.Close()
+	_ = closeReader()
+
+	cleanup := func() {
+		_ = os.Remove(tmpFile.Name())
+	}
+	return tmpFile.Name(), cleanup, nil
+}
+
 func rollbackMongoDB(
 	restorePlan *restoreplan.RestorePlan,
 	backupPath string,
@@ -236,6 +278,9 @@ func rollbackMongoDB(
 		password = pwd
 	}
 
+	user := config.MongoUser()
+	authDB := config.MongoAuthDB()
+
 	// Drop database
 	// Use mongosh (modern) or fallback to mongo (legacy)
 	mongoCmd := "mongosh"
@@ -245,7 +290,7 @@ func rollbackMongoDB(
 
 	var dropCmd *exec.Cmd
 	if restorePlan.RequiresAuth {
-		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()", "--username", "admin", "--password", password, "--authenticationDatabase", "admin")
+		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()", "--username", user, "--password", password, "--authenticationDatabase", authDB)
 	} else {
 		dropCmd = exec.Command(mongoCmd, restorePlan.Database, "--quiet", "--eval", "db.dropDatabase()")
 	}
@@ -259,9 +304,9 @@ func rollbackMongoDB(
 			"mongorestore",
 			"--db", restorePlan.Database,
 			"--dir", backupPath,
-			"--username", "admin",
+			"--username", user,
 			"--password", password,
-			"--authenticationDatabase", "admin",
+			"--authenticationDatabase", authDB,
 		)
 	} else {
 		restoreCmd = exec.Command(

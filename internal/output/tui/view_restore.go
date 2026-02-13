@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"mirrorvault/internal/restore"
 	"mirrorvault/internal/restore/analyze"
-	"mirrorvault/internal/restore/validate"
 )
 
 // padString pads a string to a specific width, accounting for ANSI color codes
@@ -672,7 +671,9 @@ func (m TUIModel) updateRestoreSelectDB(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.Selection.DBIndex >= 0 && m.Selection.DBIndex < len(displayNames) {
 			m.RestoreDumpPath = ""
-			m.ViewState = ViewRestoreDumpPath
+			m.RestoreSourceIndex = 0
+			m.RestoreError = nil
+			m.ViewState = ViewRestoreSource
 		}
 	case "esc":
 		m.ViewState = ViewRestoreSelectEngine
@@ -718,41 +719,9 @@ func (m TUIModel) updateRestoreDumpPath(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.RestoreError = fmt.Errorf("dump file path cannot be empty")
 			return m, nil
 		}
-		
-		// Build restore plan before moving to confirmation view
-		plan, err := buildRestorePlan(m)
-		if err != nil {
-			m.RestoreError = fmt.Errorf("failed to build restore plan: %v", err)
+		if err := prepareRestorePlan(&m); err != nil {
 			return m, nil
 		}
-		m.RestorePlan = plan
-
-		// Validate dump format compatibility before proceeding
-		dumpInfo, err := validate.ValidateDump(plan.DumpPath)
-		if err != nil {
-			m.RestoreError = fmt.Errorf("dump file validation failed: %v", err)
-			return m, nil
-		}
-		
-		// Check format compatibility
-		if err := validate.ValidateFormatCompatibility(dumpInfo, plan.Engine); err != nil {
-			m.RestoreError = err
-			return m, nil
-		}
-
-		// Clear error if validation passed
-		m.RestoreError = nil
-
-		// Analyze current database for display in confirmation
-		password := ""
-		if plan.RequiresAuth {
-			// We'll collect password in the execution phase, but try without for stats
-		}
-		preStats, err := analyze.AnalyzeDatabase(plan.Engine, plan.Database, plan.RequiresAuth, password)
-		if err == nil {
-			m.PreRestoreStats = preStats
-		}
-
 		// Move to confirmation view
 		m.ViewState = ViewRestoreConfirm
 		return m, nil

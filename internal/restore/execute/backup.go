@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"mirrorvault/internal/backup/credentials"
@@ -51,7 +52,7 @@ func createPreRestoreBackup(
 	}
 
 	// Execute backup
-	err := backupexecute.Run(backupPlan, authCtx, onProgress)
+	err := backupexecute.Run(backupPlan, authCtx, onProgress, nil, false)
 	if err != nil {
 		return "", fmt.Errorf("backup execution failed: %w", err)
 	}
@@ -62,19 +63,67 @@ func createPreRestoreBackup(
 
 	// If backup path wasn't set, construct it manually using the same format as backup system
 	if backupPath == "" {
-		// Backup system uses format: {dbname}_{YYYY-MM-DD}.sql
-		// Determine file extension based on engine
 		ext := ".sql"
-		if restorePlan.Engine == "MongoDB" {
-			ext = ""
-		} else if restorePlan.Engine == "Redis" {
-			ext = ".rdb"
+		dirFormat := false
+		switch restorePlan.Engine {
+		case "MongoDB":
+			mongoFormat := strings.TrimSpace(strings.ToLower(os.Getenv("MV_MONGO_BACKUP_FORMAT")))
+			if mongoFormat == "archive" || mongoFormat == "archive.gz" || mongoFormat == "archive_gz" {
+				ext = ".archive"
+				if strings.Contains(mongoFormat, "gz") {
+					ext = ".archive.gz"
+				}
+			} else {
+				ext = ""
+				dirFormat = true
+			}
+		case "Redis":
+			if strings.TrimSpace(strings.ToLower(os.Getenv("MV_REDIS_BACKUP_MODE"))) == "aof" {
+				ext = ".aof"
+			} else {
+				ext = ".rdb"
+			}
+		case "SQLite":
+			if strings.TrimSpace(strings.ToLower(os.Getenv("MV_SQLITE_BACKUP_MODE"))) == "backup" {
+				ext = ".db"
+			}
+		case "PostgreSQL":
+			backupFormat := strings.TrimSpace(strings.ToLower(os.Getenv("MV_POSTGRES_BACKUP_FORMAT")))
+			if backupFormat == "custom" || backupFormat == "c" {
+				ext = ".dump"
+			} else if backupFormat == "directory" || backupFormat == "dir" || backupFormat == "d" {
+				ext = ""
+				dirFormat = true
+			}
+		case "MSSQL":
+			ext = ".bak"
 		}
 
-		if restorePlan.Engine == "MongoDB" {
+		if dirFormat || ext == "" {
 			backupPath = filepath.Join(restorePlan.RestoreDir, fmt.Sprintf("%s_%s", restorePlan.Database, currentDate))
 		} else {
 			backupPath = filepath.Join(restorePlan.RestoreDir, fmt.Sprintf("%s_%s%s", restorePlan.Database, currentDate, ext))
+		}
+
+		backupCompression := strings.TrimSpace(strings.ToLower(os.Getenv("MV_BACKUP_COMPRESSION")))
+		if backupCompression != "" && !dirFormat && ext != "" {
+			switch backupCompression {
+			case "gz":
+				backupPath += ".gz"
+			case "bz2":
+				backupPath += ".bz2"
+			case "zip":
+				backupPath += ".zip"
+			}
+		} else if backupCompression != "" && dirFormat {
+			switch backupCompression {
+			case "gz":
+				backupPath += ".tar.gz"
+			case "bz2":
+				backupPath += ".tar.bz2"
+			case "zip":
+				backupPath += ".zip"
+			}
 		}
 		logger.Warning(fmt.Sprintf("Backup path not captured from callback, constructed: %s", backupPath))
 	}

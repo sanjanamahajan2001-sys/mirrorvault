@@ -58,9 +58,35 @@ func Run(
 	}
 	logger.Info(fmt.Sprintf("Dump format '%s' is compatible with engine '%s'", dumpInfo.Format, restorePlan.Engine))
 
+	// Step 1.6: Extract archive if needed
+	actualDumpPath := restorePlan.DumpPath
+	if dumpInfo.Archive != "" {
+		onProgress("Preparing dump", 0.13, "Extracting archive contents...", nil)
+		logger.Info("Step 1.6: Extracting archive contents")
+		extractedPath, cleanup, err := validate.ExtractArchiveIfNeeded(restorePlan.DumpPath, dumpInfo)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Archive extraction failed: %v", err))
+			onProgress("Extraction failed", 0.0, "", err)
+			return &RestoreResult{Success: false, Error: err}, err
+		}
+		defer cleanup()
+		actualDumpPath = extractedPath
+		// Re-validate extracted path to refresh format/compression details
+		dumpInfo, err = validate.ValidateDump(actualDumpPath)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Dump validation failed after extraction: %v", err))
+			onProgress("Validation failed", 0.0, "", err)
+			return &RestoreResult{Success: false, Error: err}, err
+		}
+		if err := validate.ValidateFormatCompatibility(dumpInfo, restorePlan.Engine); err != nil {
+			logger.Error(fmt.Sprintf("Format compatibility check failed after extraction: %v", err))
+			onProgress("Format mismatch", 0.0, "", err)
+			return &RestoreResult{Success: false, Error: err}, err
+		}
+	}
+
 	// Step 2: Extract target database from dump if needed
 	// Note: MongoDB directory dumps don't need extraction - we use the directory path directly
-	actualDumpPath := restorePlan.DumpPath
 	if dumpInfo.IsMultiDB && dumpInfo.Format != "mongodb" {
 		// Only extract for SQL dumps (MySQL/PostgreSQL)
 		// MongoDB directory dumps are handled directly by the restore function
@@ -88,15 +114,17 @@ func Run(
 		// actualDumpPath remains the parent directory - MongoDB restore function will handle it
 	}
 
-	// Step 2.5: Validate dump contains data
-	dumpTables, err := validate.ExtractTablesFromDump(actualDumpPath, dumpInfo.Compressed, dumpInfo.Compression)
-	if err != nil {
-		logger.Warning(fmt.Sprintf("Could not analyze dump tables: %v", err))
-	} else if len(dumpTables) == 0 {
-		logger.Warning("Dump appears to contain no tables - this may indicate an issue with the dump file")
-		onProgress("Warning", 0.2, "Dump file appears empty or could not be analyzed", nil)
-	} else {
-		logger.Info(fmt.Sprintf("Dump contains %d tables: %v", len(dumpTables), dumpTables))
+	// Step 2.5: Validate dump contains data (SQL-only)
+	if dumpInfo.Format == "sql" {
+		dumpTables, err := validate.ExtractTablesFromDump(actualDumpPath, dumpInfo.Compressed, dumpInfo.Compression)
+		if err != nil {
+			logger.Warning(fmt.Sprintf("Could not analyze dump tables: %v", err))
+		} else if len(dumpTables) == 0 {
+			logger.Warning("Dump appears to contain no tables - this may indicate an issue with the dump file")
+			onProgress("Warning", 0.2, "Dump file appears empty or could not be analyzed", nil)
+		} else {
+			logger.Info(fmt.Sprintf("Dump contains %d tables: %v", len(dumpTables), dumpTables))
+		}
 	}
 
 	// Step 3: Analyze current database

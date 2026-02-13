@@ -81,9 +81,14 @@ func (m TUIModel) viewScheduleList() string {
 				style = style.Foreground(lipgloss.Color("#89b4fa"))
 			}
 
-			b.WriteString(cursor + style.Render(fmt.Sprintf("Engine: %s", EngineNameStyle.Render(sched.Engine))) + "\n")
-			b.WriteString("  " + style.Render(fmt.Sprintf("Databases: %s", strings.Join(sched.Databases, ", "))) + "\n")
+		b.WriteString(cursor + style.Render(fmt.Sprintf("Engine: %s", EngineNameStyle.Render(sched.Engine))) + "\n")
+		b.WriteString("  " + style.Render(fmt.Sprintf("Databases: %s", formatDatabaseList(sched.Databases))) + "\n")
 			b.WriteString("  " + style.Render(fmt.Sprintf("Time: %s", sched.Time)) + "\n")
+			formatLabel := "Native"
+			if sched.Compression != "" {
+				formatLabel = fmt.Sprintf("Compressed (%s)", sched.Compression)
+			}
+			b.WriteString("  " + style.Render(fmt.Sprintf("Format: %s", formatLabel)) + "\n")
 		}
 	}
 

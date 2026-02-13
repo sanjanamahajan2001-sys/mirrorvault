@@ -12,6 +12,7 @@ import (
 
 	"mirrorvault/internal/backup/credentials"
 	"mirrorvault/internal/backup/plan"
+	"mirrorvault/internal/config"
 )
 
 func runMySQL(
@@ -19,11 +20,25 @@ func runMySQL(
 	creds *credentials.AuthContext,
 	onProgress ProgressFunc,
 ) error {
+	if err := requireCommand("mysqldump"); err != nil {
+		return err
+	}
+	if err := requireCommand("mysql"); err != nil {
+		return err
+	}
 
 	baseDir := engine.OutputDir
+	user := config.MySQLUser()
+	host := config.MySQLHost()
+	port := config.MySQLPort()
+	useSudo := host == "" || host == "localhost" || host == "127.0.0.1"
 
 	if err := ensureDir(baseDir); err != nil {
 		return err
+	}
+
+	if engine.AllDatabases {
+		return runMySQLAllDatabases(engine, creds, onProgress)
 	}
 
 	for _, db := range engine.Databases {
@@ -78,6 +93,26 @@ max_allowed_packet=512M
 		//       If this fails, fallback to --skip-lock-tables (less consistent but more compatible)
 		// Note: The --quick flag prevents loading entire tables into memory, which helps prevent
 		//       "Lost connection" errors. max_allowed_packet is set via config file to handle large rows.
+		baseArgs := []string{
+			"mysqldump",
+			"--defaults-extra-file=" + tmpConfigFile,
+			"-u", user,
+			"--quick",                    // CRITICAL: Prevents loading entire table into memory
+			"--lock-all-tables",          // Lock all tables (more compatible than --single-transaction)
+			"--net_buffer_length=16384",  // Increase network buffer for better throughput
+			"--default-character-set=utf8mb4", // Proper Unicode support
+			"--routines",                 // Include stored procedures
+			"--triggers",                 // Include triggers
+			"--events",                   // Include events
+			"--no-tablespaces",           // Skip tablespace info (compatibility)
+		}
+		if host != "" {
+			baseArgs = append(baseArgs, "-h", host)
+		}
+		if port != "" {
+			baseArgs = append(baseArgs, "-P", port)
+		}
+
 		if engine.RequiresAuth {
 			pwd, ok := creds.Get("MySQL")
 			if !ok {
@@ -85,48 +120,19 @@ max_allowed_packet=512M
 				onProgress(engine.Engine, db.Name, "", 0, "failed", err)
 				return err
 			}
-
-			// Use -p format with password directly attached (no space) - standard mysqldump format
-			// Format: -pPASSWORD (not -p PASSWORD)
-			// Use --defaults-extra-file to set session variables for increased timeouts
-			// Use --lock-all-tables instead of --single-transaction for better compatibility
-			// --single-transaction can cause immediate connection failures on some servers
-			cmd = exec.Command(
-				"sudo",
-				"mysqldump",
-				"--defaults-extra-file="+tmpConfigFile,
-				"-u", "root",
-				"-p"+pwd,
-				"--quick",                    // CRITICAL: Prevents loading entire table into memory
-				"--lock-all-tables",          // Lock all tables (more compatible than --single-transaction)
-				"--net_buffer_length=16384",  // Increase network buffer for better throughput
-				"--default-character-set=utf8mb4", // Proper Unicode support
-				"--routines",                 // Include stored procedures
-				"--triggers",                 // Include triggers
-				"--events",                   // Include events
-				"--no-tablespaces",           // Skip tablespace info (compatibility)
-				db.Name,
-			)
+			baseArgs = append(baseArgs, "-p"+pwd, db.Name)
 		} else {
 			// No password required
-			cmd = exec.Command(
-				"sudo",
-				"mysqldump",
-				"--defaults-extra-file="+tmpConfigFile,
-				"-u", "root",
-				"--quick",                    // CRITICAL: Prevents loading entire table into memory
-				"--lock-all-tables",          // Lock all tables (more compatible than --single-transaction)
-				"--net_buffer_length=16384",  // Increase network buffer for better throughput
-				"--default-character-set=utf8mb4", // Proper Unicode support
-				"--routines",                 // Include stored procedures
-				"--triggers",                 // Include triggers
-				"--events",                   // Include events
-				"--no-tablespaces",           // Skip tablespace info (compatibility)
-				db.Name,
-			)
+			baseArgs = append(baseArgs, db.Name)
 		}
 
-		f, err := os.Create(outFile)
+		if useSudo {
+			cmd = exec.Command("sudo", baseArgs...)
+		} else {
+			cmd = exec.Command(baseArgs[0], baseArgs[1:]...)
+		}
+
+		f, err := createWritableFile(outFile)
 		if err != nil {
 			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
 			return err
@@ -173,7 +179,7 @@ max_allowed_packet=512M
 			if isConnectionError {
 				// Retry without --lock-all-tables, using --skip-lock-tables instead
 				// This is a fallback for cases where table locking causes immediate connection issues
-				f2, err2 := os.Create(outFile)
+				f2, err2 := createWritableFile(outFile)
 				if err2 != nil {
 					errMsg := fmt.Errorf("mysqldump failed: %v\n%s\n(Fallback also failed: %v)", err, stderrStr, err2)
 					onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
@@ -183,40 +189,36 @@ max_allowed_packet=512M
 				var cmd2 *exec.Cmd
 				var stderr2 bytes.Buffer
 				
+				fallbackArgs := []string{
+					"mysqldump",
+					"--defaults-extra-file=" + tmpConfigFile,
+					"-u", user,
+					"--quick",
+					"--skip-lock-tables",
+					"--net_buffer_length=16384",
+					"--default-character-set=utf8mb4",
+					"--routines",
+					"--triggers",
+					"--events",
+					"--no-tablespaces",
+				}
+				if host != "" {
+					fallbackArgs = append(fallbackArgs, "-h", host)
+				}
+				if port != "" {
+					fallbackArgs = append(fallbackArgs, "-P", port)
+				}
 				if engine.RequiresAuth {
 					pwd, _ := creds.Get("MySQL")
-					cmd2 = exec.Command(
-						"sudo",
-						"mysqldump",
-						"--defaults-extra-file="+tmpConfigFile,
-						"-u", "root",
-						"-p"+pwd,
-						"--quick",                    // CRITICAL: Prevents loading entire table into memory
-						"--skip-lock-tables",         // Skip locking (fallback - less consistent but more compatible)
-						"--net_buffer_length=16384",  // Increase network buffer
-						"--default-character-set=utf8mb4",
-						"--routines",
-						"--triggers",
-						"--events",
-						"--no-tablespaces",
-						db.Name,
-					)
+					fallbackArgs = append(fallbackArgs, "-p"+pwd, db.Name)
 				} else {
-					cmd2 = exec.Command(
-						"sudo",
-						"mysqldump",
-						"--defaults-extra-file="+tmpConfigFile,
-						"-u", "root",
-						"--quick",
-						"--skip-lock-tables",         // Skip locking (fallback - less consistent but more compatible)
-						"--net_buffer_length=16384",
-						"--default-character-set=utf8mb4",
-						"--routines",
-						"--triggers",
-						"--events",
-						"--no-tablespaces",
-						db.Name,
-					)
+					fallbackArgs = append(fallbackArgs, db.Name)
+				}
+
+				if useSudo {
+					cmd2 = exec.Command("sudo", fallbackArgs...)
+				} else {
+					cmd2 = exec.Command(fallbackArgs[0], fallbackArgs[1:]...)
 				}
 				
 				cmd2.Stdout = f2
@@ -263,11 +265,23 @@ max_allowed_packet=512M
 			_ = f.Close()
 		}
 
-		info, _ := os.Stat(outFile)
-		var size int64
-		if info != nil {
-			size = info.Size()
+		size, err := validateNonEmptyFile(outFile)
+		if err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
 		}
+		if err := validateSQLDump(outFile); err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
+		}
+
+		compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+		if err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
+		}
+		outFile = compressedPath
+		size = compressedSize
 
 		// ✔ done
 		onProgress(
@@ -283,6 +297,141 @@ max_allowed_packet=512M
 	return nil
 }
 
+func runMySQLAllDatabases(
+	engine plan.EnginePlan,
+	creds *credentials.AuthContext,
+	onProgress ProgressFunc,
+) error {
+	baseDir := engine.OutputDir
+	user := config.MySQLUser()
+	host := config.MySQLHost()
+	port := config.MySQLPort()
+	useSudo := host == "" || host == "localhost" || host == "127.0.0.1"
+
+	currentDate := time.Now().Format("2006-01-02")
+	prefix := strings.ToLower(engine.Engine)
+	outFile := filepath.Join(baseDir, fmt.Sprintf("%s_all_databases_%s.sql", prefix, currentDate))
+	progressName := "All databases"
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		0,
+		"running",
+		nil,
+	)
+
+	tmpConfigFile := filepath.Join(os.TempDir(), fmt.Sprintf("mirrorvault_mysql_%d.cnf", time.Now().UnixNano()))
+	configContent := fmt.Sprintf(`[mysqldump]
+max_allowed_packet=512M
+`)
+	if err := os.WriteFile(tmpConfigFile, []byte(configContent), 0644); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", fmt.Errorf("failed to create temp config: %v", err))
+		return fmt.Errorf("failed to create temp config: %v", err)
+	}
+	defer os.Remove(tmpConfigFile)
+
+	if len(engine.Databases) == 0 {
+		err := fmt.Errorf("no databases available for MySQL backup")
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	baseArgs := []string{
+		"mysqldump",
+		"--defaults-extra-file=" + tmpConfigFile,
+		"-u", user,
+		"--quick",
+		"--lock-all-tables",
+		"--net_buffer_length=16384",
+		"--default-character-set=utf8mb4",
+		"--routines",
+		"--triggers",
+		"--events",
+		"--no-tablespaces",
+		"--databases",
+	}
+	for _, db := range engine.Databases {
+		baseArgs = append(baseArgs, db.Name)
+	}
+	if host != "" {
+		baseArgs = append(baseArgs, "-h", host)
+	}
+	if port != "" {
+		baseArgs = append(baseArgs, "-P", port)
+	}
+	if engine.RequiresAuth {
+		pwd, ok := creds.Get("MySQL")
+		if !ok {
+			err := fmt.Errorf("missing MySQL credentials")
+			onProgress(engine.Engine, progressName, "", 0, "failed", err)
+			return err
+		}
+		baseArgs = append(baseArgs, "-p"+pwd)
+	}
+
+	var cmd *exec.Cmd
+	if useSudo {
+		cmd = exec.Command("sudo", baseArgs...)
+	} else {
+		cmd = exec.Command(baseArgs[0], baseArgs[1:]...)
+	}
+
+	f, err := createWritableFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stdout = f
+	cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+	err = cmd.Run()
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(outFile)
+		errMsg := fmt.Errorf("mysqldump --all-databases failed: %v", err)
+		if stderr.Len() > 0 {
+			errMsg = fmt.Errorf("mysqldump --all-databases failed: %v\n%s", err, stderr.String())
+		}
+		onProgress(engine.Engine, progressName, "", 0, "failed", errMsg)
+		return errMsg
+	}
+
+	_ = f.Close()
+
+	size, err := validateNonEmptyFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	if err := validateSQLDump(outFile); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	outFile = compressedPath
+	size = compressedSize
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		size,
+		"done",
+		nil,
+	)
+
+	return nil
+}
+
 // tryDumpTablesIndividually attempts to dump tables one by one when full database dump fails
 // This helps identify problematic tables and allows backup to continue with other tables
 func tryDumpTablesIndividually(
@@ -293,15 +442,40 @@ func tryDumpTablesIndividually(
 	tmpConfigFile string,
 	onProgress ProgressFunc,
 ) error {
+	user := config.MySQLUser()
+	host := config.MySQLHost()
+	port := config.MySQLPort()
+	useSudo := host == "" || host == "localhost" || host == "127.0.0.1"
+
 	// Get list of tables in the database
 	var listCmd *exec.Cmd
 	if engine.RequiresAuth {
 		pwd, _ := creds.Get("MySQL")
-		listCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+pwd, "-N", "-e", 
-			fmt.Sprintf("USE %s; SHOW TABLES;", dbName))
+		args := []string{"mysql", "-u", user, "-p" + pwd, "-N", "-e", fmt.Sprintf("USE %s; SHOW TABLES;", dbName)}
+		if host != "" {
+			args = append(args, "-h", host)
+		}
+		if port != "" {
+			args = append(args, "-P", port)
+		}
+		if useSudo {
+			listCmd = exec.Command("sudo", args...)
+		} else {
+			listCmd = exec.Command(args[0], args[1:]...)
+		}
 	} else {
-		listCmd = exec.Command("sudo", "mysql", "-u", "root", "-N", "-e", 
-			fmt.Sprintf("USE %s; SHOW TABLES;", dbName))
+		args := []string{"mysql", "-u", user, "-N", "-e", fmt.Sprintf("USE %s; SHOW TABLES;", dbName)}
+		if host != "" {
+			args = append(args, "-h", host)
+		}
+		if port != "" {
+			args = append(args, "-P", port)
+		}
+		if useSudo {
+			listCmd = exec.Command("sudo", args...)
+		} else {
+			listCmd = exec.Command(args[0], args[1:]...)
+		}
 	}
 	
 	var tablesOut bytes.Buffer
@@ -326,7 +500,7 @@ func tryDumpTablesIndividually(
 	}
 	
 	// Create output file
-	f, err := os.Create(outFile)
+	f, err := createWritableFile(outFile)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %v", err)
 	}
@@ -349,36 +523,33 @@ func tryDumpTablesIndividually(
 		// Write table header comment
 		f.WriteString(fmt.Sprintf("\n-- Table structure and data for table `%s`\n", tableName))
 		
+		dumpArgs := []string{
+			"mysqldump",
+			"--defaults-extra-file=" + tmpConfigFile,
+			"-u", user,
+			"--quick",
+			"--skip-lock-tables",
+			"--net_buffer_length=16384",
+			"--default-character-set=utf8mb4",
+			"--no-tablespaces",
+		}
+		if host != "" {
+			dumpArgs = append(dumpArgs, "-h", host)
+		}
+		if port != "" {
+			dumpArgs = append(dumpArgs, "-P", port)
+		}
 		if engine.RequiresAuth {
 			pwd, _ := creds.Get("MySQL")
-			dumpCmd = exec.Command(
-				"sudo",
-				"mysqldump",
-				"--defaults-extra-file="+tmpConfigFile,
-				"-u", "root",
-				"-p"+pwd,
-				"--quick",
-				"--skip-lock-tables",
-				"--net_buffer_length=16384",
-				"--default-character-set=utf8mb4",
-				"--no-tablespaces",
-				dbName,
-				tableName,
-			)
+			dumpArgs = append(dumpArgs, "-p"+pwd, dbName, tableName)
 		} else {
-			dumpCmd = exec.Command(
-				"sudo",
-				"mysqldump",
-				"--defaults-extra-file="+tmpConfigFile,
-				"-u", "root",
-				"--quick",
-				"--skip-lock-tables",
-				"--net_buffer_length=16384",
-				"--default-character-set=utf8mb4",
-				"--no-tablespaces",
-				dbName,
-				tableName,
-			)
+			dumpArgs = append(dumpArgs, dbName, tableName)
+		}
+
+		if useSudo {
+			dumpCmd = exec.Command("sudo", dumpArgs...)
+		} else {
+			dumpCmd = exec.Command(dumpArgs[0], dumpArgs[1:]...)
 		}
 		
 		var tableStderr bytes.Buffer

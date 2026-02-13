@@ -81,6 +81,26 @@ WantedBy=timers.target
 	return nil
 }
 
+// CreateCleanupCron creates a cron entry for cleanup on non-systemd systems
+func CreateCleanupCron() error {
+	mirrorvaultPath, err := findMirrorVaultPath()
+	if err != nil {
+		return fmt.Errorf("failed to find mirrorvault binary: %w", err)
+	}
+
+	cronPath := filepath.Join(cronDir, "mirrorvault-cleanup")
+	content := fmt.Sprintf(`SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+00 01 * * * root "%s" cleanup
+`, mirrorvaultPath)
+
+	if err := os.WriteFile(cronPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write cleanup cron file: %w", err)
+	}
+
+	return nil
+}
+
 // RunCleanup removes backups older than 14 days
 func RunCleanup() error {
 	cutoffDate := time.Now().AddDate(0, 0, -BackupRetentionDays)

@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"compress/bzip2"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -10,9 +11,10 @@ import (
 )
 
 type DumpInfo struct {
-	Format      string // "sql", "mongodb", "redis", "sqlite"
+	Format      string // "sql", "mongodb", "redis", "sqlite", "postgres_custom", "postgres_dir", "redis_aof"
 	Compressed  bool
 	Compression string // "gz", "bz2", "zip"
+	Archive     string // "tar", "zip"
 	IsMultiDB   bool
 	Databases   []string // List of databases in dump (for multi-DB dumps)
 	Size        int64
@@ -23,10 +25,11 @@ func ValidateFormatCompatibility(dumpInfo *DumpInfo, engine string) error {
 	// Map of engines to their compatible formats
 	engineFormats := map[string][]string{
 		"MySQL":      {"sql"},
-		"PostgreSQL": {"sql"},
+		"PostgreSQL": {"sql", "postgres_custom", "postgres_dir"},
 		"MongoDB":    {"mongodb"},
-		"Redis":      {"redis"},
+		"Redis":      {"redis", "redis_aof"},
 		"SQLite":     {"sqlite", "sql"}, // SQLite can restore from both .db files and .sql dumps
+		"MSSQL":      {"mssql"},
 	}
 
 	compatibleFormats, ok := engineFormats[engine]
@@ -43,10 +46,14 @@ func ValidateFormatCompatibility(dumpInfo *DumpInfo, engine string) error {
 
 	// Format mismatch - provide helpful error message
 	formatName := map[string]string{
-		"sql":      "SQL dump",
-		"mongodb":  "MongoDB dump",
-		"redis":    "Redis dump",
-		"sqlite":   "SQLite database",
+		"sql":             "SQL dump",
+		"mongodb":         "MongoDB dump",
+		"redis":           "Redis dump",
+		"redis_aof":       "Redis AOF",
+		"sqlite":          "SQLite database",
+		"postgres_custom": "PostgreSQL custom archive",
+		"postgres_dir":    "PostgreSQL directory format",
+		"mssql":           "MSSQL backup",
 	}[dumpInfo.Format]
 
 	engineName := engine
@@ -75,10 +82,29 @@ func ValidateDump(dumpPath string) (*DumpInfo, error) {
 		Size: info.Size(),
 	}
 
-	// Detect compression first
+	// Detect compression/archive first
+	lowerPath := strings.ToLower(dumpPath)
 	ext := strings.ToLower(filepath.Ext(dumpPath))
 	compressionExt := ""
-	if ext == ".gz" {
+	if strings.HasSuffix(lowerPath, ".tar.gz") {
+		dumpInfo.Compressed = true
+		dumpInfo.Compression = "gz"
+		dumpInfo.Archive = "tar"
+		compressionExt = ".tar.gz"
+	} else if strings.HasSuffix(lowerPath, ".tgz") {
+		dumpInfo.Compressed = true
+		dumpInfo.Compression = "gz"
+		dumpInfo.Archive = "tar"
+		compressionExt = ".tgz"
+	} else if strings.HasSuffix(lowerPath, ".tar.bz2") {
+		dumpInfo.Compressed = true
+		dumpInfo.Compression = "bz2"
+		dumpInfo.Archive = "tar"
+		compressionExt = ".tar.bz2"
+	} else if ext == ".tar" {
+		dumpInfo.Archive = "tar"
+		compressionExt = ".tar"
+	} else if ext == ".gz" {
 		dumpInfo.Compressed = true
 		dumpInfo.Compression = "gz"
 		compressionExt = ".gz"
@@ -89,6 +115,7 @@ func ValidateDump(dumpPath string) (*DumpInfo, error) {
 	} else if ext == ".zip" {
 		dumpInfo.Compressed = true
 		dumpInfo.Compression = "zip"
+		dumpInfo.Archive = "zip"
 		compressionExt = ".zip"
 	}
 
@@ -99,16 +126,32 @@ func ValidateDump(dumpPath string) (*DumpInfo, error) {
 		basePath = strings.TrimSuffix(dumpPath, compressionExt)
 	}
 	baseExt := strings.ToLower(filepath.Ext(basePath))
-	
-	if baseExt == ".sql" {
+
+	if dumpInfo.Archive != "" {
+		format, err := detectFormatFromArchive(dumpPath, dumpInfo)
+		if err != nil {
+			return nil, fmt.Errorf("could not detect archive format: %w", err)
+		}
+		dumpInfo.Format = format
+	} else if baseExt == ".sql" {
 		dumpInfo.Format = "sql"
+	} else if baseExt == ".dump" || baseExt == ".backup" {
+		dumpInfo.Format = "postgres_custom"
+	} else if baseExt == ".bak" {
+		dumpInfo.Format = "mssql"
 	} else if baseExt == ".rdb" {
 		dumpInfo.Format = "redis"
+	} else if baseExt == ".aof" || strings.HasSuffix(lowerPath, "appendonly.aof") {
+		dumpInfo.Format = "redis_aof"
 	} else if baseExt == ".db" || baseExt == ".sqlite" {
 		dumpInfo.Format = "sqlite"
 	} else if info.IsDir() {
-		// MongoDB dumps are typically directories
-		dumpInfo.Format = "mongodb"
+		if isPostgresDirectory(dumpPath) {
+			dumpInfo.Format = "postgres_dir"
+		} else {
+			// MongoDB dumps are typically directories
+			dumpInfo.Format = "mongodb"
+		}
 	} else if baseExt == "" || baseExt == ".archive" || baseExt == ".bson" {
 		// MongoDB archive format (single file, possibly compressed)
 		// Check content to confirm
@@ -136,7 +179,7 @@ func ValidateDump(dumpPath string) (*DumpInfo, error) {
 	}
 
 	// For MongoDB dumps, check if it's multi-database (has multiple database subdirectories)
-	if dumpInfo.Format == "mongodb" {
+	if dumpInfo.Format == "mongodb" && info.IsDir() {
 		entries, err := os.ReadDir(dumpPath)
 		if err == nil {
 			dbCount := 0
@@ -190,8 +233,9 @@ func detectFormatFromContent(dumpPath string, compressed bool, compression strin
 			defer gzReader.Close()
 			reader = gzReader
 		case "bz2":
-			// bzip2 would need a bzip2 reader, but for now we'll skip
-			return "", fmt.Errorf("bzip2 compression detection not implemented")
+			reader = bzip2.NewReader(file)
+		default:
+			return "", fmt.Errorf("unsupported compression: %s", compression)
 		}
 	}
 
@@ -203,6 +247,11 @@ func detectFormatFromContent(dumpPath string, compressed bool, compression strin
 	}
 
 	content := string(buf[:n])
+
+	// Check for PostgreSQL custom format magic
+	if n >= 5 && string(buf[:5]) == "PGDMP" {
+		return "postgres_custom", nil
+	}
 
 	// Check for MongoDB BSON archive markers (binary format)
 	// MongoDB archives start with specific binary markers
@@ -270,6 +319,8 @@ func detectSQLDatabases(dumpPath string, compressed bool, compression string) ([
 			}
 			defer gzReader.Close()
 			reader = gzReader
+		case "bz2":
+			reader = bzip2.NewReader(file)
 		}
 	}
 
@@ -359,28 +410,11 @@ func ExtractDatabaseFromDump(dumpPath, targetDB string, dumpInfo *DumpInfo) (str
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 
-	// Open dump file
-	var reader io.Reader
-	file, err := os.Open(dumpPath)
+	reader, closeReader, err := OpenDecompressedReader(dumpPath, dumpInfo)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-
-	reader = file
-
-	// Handle compression
-	if dumpInfo.Compressed {
-		switch dumpInfo.Compression {
-		case "gz":
-			gzReader, err := gzip.NewReader(file)
-			if err != nil {
-				return "", fmt.Errorf("failed to create gzip reader (file may be corrupted or incomplete): %w", err)
-			}
-			defer gzReader.Close()
-			reader = gzReader
-		}
-	}
+	defer closeReader()
 
 	// Write extracted database to temp file
 	outFile, err := os.Create(tmpPath)

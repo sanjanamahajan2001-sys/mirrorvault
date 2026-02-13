@@ -21,8 +21,8 @@ Complete guide for developers and engineers working on MirrorVault.
 
 MirrorVault is a secure database backup agent written in Go that provides:
 - Interactive TUI for backup and restore operations
-- Support for multiple database engines (MySQL, PostgreSQL, MongoDB, Redis, SQLite)
-- Scheduled automatic backups via systemd timers
+- Support for multiple database engines (MySQL, PostgreSQL, MongoDB, Redis, SQLite, MSSQL)
+- Scheduled automatic backups via systemd timers or cron
 - Safe restore operations with automatic rollback
 - Backup cleanup and retention management
 
@@ -31,7 +31,7 @@ MirrorVault is a secure database backup agent written in Go that provides:
 - **Language**: Go 1.24+
 - **TUI Framework**: Bubble Tea (charmbracelet/bubbletea)
 - **Styling**: Lipgloss (charmbracelet/lipgloss)
-- **System Integration**: systemd (for scheduled backups)
+- **System Integration**: systemd or cron (for scheduled backups)
 
 ---
 
@@ -41,8 +41,8 @@ MirrorVault is a secure database backup agent written in Go that provides:
 
 - **Go**: Version 1.24 or later
 - **Git**: For version control
-- **Linux System**: With systemd (for scheduled backups)
-- **Database Engines**: MySQL, PostgreSQL, MongoDB, Redis, SQLite (for testing)
+- **Linux System**: With systemd or cron (for scheduled backups)
+- **Database Engines**: MySQL, PostgreSQL, MongoDB, Redis, SQLite, MSSQL (for testing)
 
 ### Development Tools
 
@@ -138,8 +138,10 @@ mirrorvault/
 │   │   │   └── *_bridge.go         # Bridge components
 │   │   ├── plain.go                 # Plain text output
 │   │   └── prompt.go                # User prompts
-│   └── version/                     # Version information
-│       └── version.go
+│   ├── version/                     # Version information
+│   │   └── version.go
+│   └── logrotate/                   # Log rotation installer
+│       └── install.go
 ├── pkg/
 │   └── model/                        # Shared models
 │       └── database.go
@@ -339,7 +341,7 @@ User Selection → Plan Builder → Executor → Database Engine
 
 **Key Components**:
 - **Schedule Manager**: CRUD operations for schedules
-- **Systemd Integration**: Creates timer and service units
+- **Scheduler Backends**: systemd timers or cron
 - **Cleanup**: Automatic backup cleanup (14-day retention)
 
 **Scheduling Flow**:
@@ -714,6 +716,8 @@ go mod tidy
 ### Configuration
 - Schedules: `/var/lib/mirrorvault/schedules.json`
 - Systemd Units: `/etc/systemd/system/mirrorvault-*.timer`
+ - Schedule secrets: `/var/lib/mirrorvault/secrets/`
+ - Cron jobs (if systemd not available): `crontab -l`
 
 ### Data
 - Backups: `/var/backups/mirrorvault/`
@@ -722,6 +726,7 @@ go mod tidy
 
 ### Logs
 - Restore Logs: `/var/log/mirrorvault/restore_*.log`
+ - Logrotate config: `/etc/logrotate.d/mirrorvault` (install via `mirrorvault install-logrotate`)
 
 ---
 

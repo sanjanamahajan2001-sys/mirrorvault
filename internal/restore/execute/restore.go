@@ -28,6 +28,8 @@ func restoreDatabase(
 		return restoreSQLite(restorePlan, dumpPath, dumpInfo, logger, onProgress)
 	case "Redis":
 		return restoreRedis(restorePlan, dumpPath, dumpInfo, authCtx, logger, onProgress)
+	case "MSSQL":
+		return restoreMSSQL(restorePlan, dumpPath, dumpInfo, authCtx, logger, onProgress)
 	default:
 		return fmt.Errorf("restore not implemented for engine: %s", restorePlan.Engine)
 	}
@@ -50,6 +52,8 @@ func rollbackFromBackup(
 		return rollbackSQLite(restorePlan, backupPath, logger)
 	case "Redis":
 		return rollbackRedis(restorePlan, backupPath, authCtx, logger)
+	case "MSSQL":
+		return rollbackMSSQL(restorePlan, backupPath, authCtx, logger)
 	default:
 		return fmt.Errorf("rollback not implemented for engine: %s", restorePlan.Engine)
 	}

@@ -4,8 +4,10 @@ import (
 	"fmt"
 
 	"mirrorvault/internal/backup/credentials"
+	"mirrorvault/internal/restore/analyze"
 	restoreexecute "mirrorvault/internal/restore/execute"
 	restoreplan "mirrorvault/internal/restore/plan"
+	"mirrorvault/internal/restore/validate"
 )
 
 func buildRestorePlan(m TUIModel) (*restoreplan.RestorePlan, error) {
@@ -31,6 +33,35 @@ func buildRestorePlan(m TUIModel) (*restoreplan.RestorePlan, error) {
 	}
 
 	return plan, nil
+}
+
+func prepareRestorePlan(m *TUIModel) error {
+	if m == nil {
+		return fmt.Errorf("restore model is nil")
+	}
+	plan, err := buildRestorePlan(*m)
+	if err != nil {
+		m.RestoreError = fmt.Errorf("failed to build restore plan: %v", err)
+		return err
+	}
+	m.RestorePlan = plan
+
+	dumpInfo, err := validate.ValidateDump(plan.DumpPath)
+	if err != nil {
+		m.RestoreError = fmt.Errorf("dump file validation failed: %v", err)
+		return err
+	}
+	if err := validate.ValidateFormatCompatibility(dumpInfo, plan.Engine); err != nil {
+		m.RestoreError = err
+		return err
+	}
+
+	m.RestoreError = nil
+	preStats, err := analyze.AnalyzeDatabase(plan.Engine, plan.Database, plan.RequiresAuth, "")
+	if err == nil {
+		m.PreRestoreStats = preStats
+	}
+	return nil
 }
 
 func startRestoreExecution(m TUIModel) {

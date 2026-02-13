@@ -15,6 +15,7 @@ func startExecutionCmd(m TUIModel) tea.Cmd {
 	authCopy := m.Auth
 	execItems := m.Exec.Items
 	modeCopy := m.Mode
+	driveEnabled := m.DriveEnabled && modeCopy == BackupMode
 
 	return func() tea.Msg {
 		// Start execution in a goroutine immediately
@@ -60,6 +61,20 @@ func startExecutionCmd(m TUIModel) tea.Cmd {
 					planCopy,
 					authCopy,
 					EmitExecProgress,
+					func(engine, db string, progress execute.DriveProgress) {
+						EmitDriveProgress(
+							engine,
+							db,
+							progress.Stage,
+							progress.Message,
+							progress.RemoteName,
+							progress.BackupSize,
+							progress.AccountRemaining,
+							progress.AccountTotal,
+							progress.Err,
+						)
+					},
+					driveEnabled,
 				)
 			} else {
 				// If we get here, something is wrong - emit errors

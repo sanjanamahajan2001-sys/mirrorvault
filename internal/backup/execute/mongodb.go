@@ -12,32 +12,68 @@ import (
 
 	"mirrorvault/internal/backup/credentials"
 	"mirrorvault/internal/backup/plan"
+	"mirrorvault/internal/config"
 )
+
+func mongoBackupFormat() (string, bool) {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("MV_MONGO_BACKUP_FORMAT")))
+	switch value {
+	case "archive", "archive.gz", "archive_gz":
+		return "archive", value == "archive.gz" || value == "archive_gz"
+	default:
+		return "directory", false
+	}
+}
 
 func runMongoDB(
 	engine plan.EnginePlan,
 	creds *credentials.AuthContext,
 	onProgress ProgressFunc,
 ) error {
+	if err := requireCommand("mongodump"); err != nil {
+		return err
+	}
+	if _, err := requireAnyCommand("mongosh", "mongo"); err != nil {
+		return err
+	}
 
 	baseDir := engine.OutputDir
+	user := config.MongoUser()
+	authDB := config.MongoAuthDB()
 
 	if err := ensureDir(baseDir); err != nil {
 		return err
 	}
 
+	backupFormat, useGzip := mongoBackupFormat()
+
+	if engine.AllDatabases {
+		return runMongoDBAllDatabases(engine, creds, onProgress)
+	}
+
 	for _, db := range engine.Databases {
 		// Generate filename with current date: dbname_YYYY-MM-DD
 		currentDate := time.Now().Format("2006-01-02")
-		// MongoDB backup creates a directory, so we'll name it dbname_YYYY-MM-DD
 		backupDirName := fmt.Sprintf("%s_%s", db.Name, currentDate)
 		outDir := filepath.Join(baseDir, backupDirName)
+		outFile := ""
+		if backupFormat == "archive" {
+			ext := ".archive"
+			if useGzip {
+				ext = ".archive.gz"
+			}
+			outFile = filepath.Join(baseDir, fmt.Sprintf("%s_%s%s", db.Name, currentDate, ext))
+		}
 
 		// ▶ running
+		progressPath := outDir
+		if outFile != "" {
+			progressPath = outFile
+		}
 		onProgress(
 			engine.Engine,
 			db.Name,
-			outDir,
+			progressPath,
 			0,
 			"running",
 			nil,
@@ -53,24 +89,28 @@ func runMongoDB(
 				return err
 			}
 
-			// mongodump with authentication
-			// Use "admin" as default username (most common MongoDB setup)
-			// Note: In production, username might need to be configurable
-			cmd = exec.Command(
-				"mongodump",
-				"--db", db.Name,
-				"--out", outDir,
-				"--username", "admin",
-				"--password", pwd,
-				"--authenticationDatabase", "admin",
-			)
+			args := []string{"mongodump", "--db", db.Name, "--username", user, "--password", pwd, "--authenticationDatabase", authDB}
+			if backupFormat == "archive" {
+				args = append(args, "--archive="+outFile)
+				if useGzip {
+					args = append(args, "--gzip")
+				}
+			} else {
+				args = append(args, "--out", outDir)
+			}
+			cmd = exec.Command(args[0], args[1:]...)
 		} else {
 			// mongodump without authentication
-			cmd = exec.Command(
-				"mongodump",
-				"--db", db.Name,
-				"--out", outDir,
-			)
+			args := []string{"mongodump", "--db", db.Name}
+			if backupFormat == "archive" {
+				args = append(args, "--archive="+outFile)
+				if useGzip {
+					args = append(args, "--gzip")
+				}
+			} else {
+				args = append(args, "--out", outDir)
+			}
+			cmd = exec.Command(args[0], args[1:]...)
 		}
 
 		var stderr bytes.Buffer
@@ -99,9 +139,9 @@ func runMongoDB(
 						"mongodump",
 						"--db", db.Name,
 						"--out", outDir,
-						"--username", "admin",
+						"--username", user,
 						"--password", pwd,
-						"--authenticationDatabase", "admin",
+						"--authenticationDatabase", authDB,
 						"--numParallelCollections", "1", // Dump one collection at a time
 					)
 				} else {
@@ -137,33 +177,155 @@ func runMongoDB(
 			}
 		}
 
-		// Calculate total size of backup directory
 		var size int64
-		err = filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
+		if backupFormat == "archive" {
+			size, err = validateNonEmptyFile(outFile)
+		} else {
+			size, err = validateMongoDumpDir(outDir)
+		}
+		if err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
+		}
+		if strictValidationEnabled() {
+			if err := validateMongoDryRun(progressPath, db.Name, engine.RequiresAuth, creds); err != nil {
+				onProgress(engine.Engine, db.Name, "", 0, "failed", err)
 				return err
 			}
-			if !info.IsDir() {
-				size += info.Size()
-			}
-			return nil
-		})
+		}
 
-		if err != nil {
-			// If size calculation fails, just report 0
-			size = 0
+		if backupFormat == "directory" {
+			compressedPath, compressedSize, err := applyBackupCompression(outDir, true)
+			if err != nil {
+				onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+				return err
+			}
+			progressPath = compressedPath
+			size = compressedSize
 		}
 
 		// ✔ done
 		onProgress(
 			engine.Engine,
 			db.Name,
-			outDir,
+			progressPath,
 			size,
 			"done",
 			nil,
 		)
 	}
+
+	return nil
+}
+
+func runMongoDBAllDatabases(
+	engine plan.EnginePlan,
+	creds *credentials.AuthContext,
+	onProgress ProgressFunc,
+) error {
+	baseDir := engine.OutputDir
+	user := config.MongoUser()
+	authDB := config.MongoAuthDB()
+
+	currentDate := time.Now().Format("2006-01-02")
+	prefix := strings.ToLower(engine.Engine)
+	dumpDir := filepath.Join(baseDir, fmt.Sprintf("%s_all_databases_%s", prefix, currentDate))
+	outFile := dumpDir + ".tar"
+	progressName := "All databases"
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		0,
+		"running",
+		nil,
+	)
+
+	if len(engine.Databases) == 0 {
+		err := fmt.Errorf("no databases available for MongoDB backup")
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	_ = os.RemoveAll(dumpDir)
+	if err := os.MkdirAll(dumpDir, 0755); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	for _, db := range engine.Databases {
+		var cmd *exec.Cmd
+		if engine.RequiresAuth {
+			pwd, ok := creds.Get("MongoDB")
+			if !ok {
+				err := fmt.Errorf("missing MongoDB credentials")
+				onProgress(engine.Engine, progressName, "", 0, "failed", err)
+				return err
+			}
+			args := []string{"mongodump", "--db", db.Name, "--out", dumpDir, "--username", user, "--password", pwd, "--authenticationDatabase", authDB}
+			cmd = exec.Command(args[0], args[1:]...)
+		} else {
+			args := []string{"mongodump", "--db", db.Name, "--out", dumpDir}
+			cmd = exec.Command(args[0], args[1:]...)
+		}
+
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+		if err := cmd.Run(); err != nil {
+			stderrStr := stderr.String()
+			errMsg := fmt.Errorf("mongodump failed for %s: %v", db.Name, err)
+			if stderrStr != "" {
+				errMsg = fmt.Errorf("mongodump failed for %s: %v\n%s", db.Name, err, stderrStr)
+			}
+			onProgress(engine.Engine, progressName, "", 0, "failed", errMsg)
+			return errMsg
+		}
+	}
+
+	if _, err := validateMongoDumpDir(dumpDir); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	if strictValidationEnabled() {
+		if err := validateMongoDryRun(dumpDir, "", engine.RequiresAuth, creds); err != nil {
+			onProgress(engine.Engine, progressName, "", 0, "failed", err)
+			return err
+		}
+	}
+
+	tarPath, err := tarDir(dumpDir)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	_ = os.RemoveAll(dumpDir)
+
+	outFile = tarPath
+
+	size, err := validateNonEmptyFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	outFile = compressedPath
+	size = compressedSize
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		size,
+		"done",
+		nil,
+	)
 
 	return nil
 }
@@ -176,22 +338,29 @@ func tryDumpMongoCollectionsIndividually(
 	outDir string,
 	onProgress ProgressFunc,
 ) error {
+	user := config.MongoUser()
+	authDB := config.MongoAuthDB()
+	mongoCmd, err := requireAnyCommand("mongosh", "mongo")
+	if err != nil {
+		return err
+	}
+
 	// Get list of collections in the database
 	var listCmd *exec.Cmd
 	if engine.RequiresAuth {
 		pwd, _ := creds.Get("MongoDB")
 		listCmd = exec.Command(
-			"mongo",
+			mongoCmd,
 			dbName,
 			"--quiet",
 			"--eval", "db.getCollectionNames().join('\\n')",
-			"--username", "admin",
+			"--username", user,
 			"--password", pwd,
-			"--authenticationDatabase", "admin",
+			"--authenticationDatabase", authDB,
 		)
 	} else {
 		listCmd = exec.Command(
-			"mongo",
+			mongoCmd,
 			dbName,
 			"--quiet",
 			"--eval", "db.getCollectionNames().join('\\n')",
@@ -239,9 +408,9 @@ func tryDumpMongoCollectionsIndividually(
 				"--db", dbName,
 				"--collection", collectionName,
 				"--out", outDir,
-				"--username", "admin",
+				"--username", user,
 				"--password", pwd,
-				"--authenticationDatabase", "admin",
+				"--authenticationDatabase", authDB,
 			)
 		} else {
 			dumpCmd = exec.Command(
@@ -277,4 +446,43 @@ func tryDumpMongoCollectionsIndividually(
 	}
 	
 	return nil
+}
+
+func validateMongoDryRun(dumpPath string, dbName string, requiresAuth bool, creds *credentials.AuthContext) error {
+	if err := requireCommand("mongorestore"); err != nil {
+		return err
+	}
+
+	helpOutput, err := exec.Command("mongorestore", "--help").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	if !strings.Contains(string(helpOutput), "--dryRun") {
+		return nil
+	}
+
+	args := []string{"mongorestore", "--dryRun"}
+	if dbName != "" {
+		args = append(args, "--db", dbName)
+	}
+	if info, err := os.Stat(dumpPath); err == nil && info.IsDir() {
+		args = append(args, "--dir", dumpPath)
+	} else {
+		args = append(args, "--archive")
+		if strings.HasSuffix(strings.ToLower(dumpPath), ".gz") {
+			args = append(args, "--gzip")
+		}
+	}
+	if requiresAuth {
+		pwd, ok := creds.Get("MongoDB")
+		if !ok {
+			return fmt.Errorf("missing MongoDB credentials")
+		}
+		user := config.MongoUser()
+		authDB := config.MongoAuthDB()
+		args = append(args, "--username", user, "--password", pwd, "--authenticationDatabase", authDB)
+	}
+
+	cmd := exec.Command(args[0], args[1:]...)
+	return cmd.Run()
 }

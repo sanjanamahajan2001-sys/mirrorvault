@@ -10,9 +10,10 @@ Complete guide to supported backup formats, dump commands, and restore compatibi
 4. [MongoDB](#mongodb)
 5. [Redis](#redis)
 6. [SQLite](#sqlite)
-7. [Compression Support](#compression-support)
-8. [Best Practices](#best-practices)
-9. [Troubleshooting](#troubleshooting)
+7. [MSSQL](#mssql)
+8. [Compression Support](#compression-support)
+9. [Best Practices](#best-practices)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -35,7 +36,7 @@ MirrorVault supports **standard database dump formats** created by official data
 ### Supported Formats
 
 - ✅ **SQL dumps** (`.sql`) - Created with `mysqldump`
-- ✅ **Compressed SQL dumps** (`.sql.gz`) - Created with `mysqldump | gzip`
+- ✅ **Compressed SQL dumps** (`.sql.gz`, `.sql.bz2`, `.sql.zip`) - Created with `mysqldump` and compression
 - ✅ **Single database dumps** - `mysqldump database_name`
 - ✅ **Multi-database dumps** - `mysqldump --all-databases` or `mysqldump --databases db1 db2`
 - ✅ **Custom mysqldump flags** - Works with any `mysqldump` flags
@@ -82,7 +83,7 @@ sudo mysqldump -u root DATABASE_NAME table1 table2 > /path/to/backup.sql
 
 MirrorVault uses the `mysql` command to restore SQL dumps:
 - Automatically extracts target database from multi-database dumps
-- Handles gzip compression automatically
+- Handles gzip/bzip2/zip compression automatically
 - Drops all existing tables before restore (complete replacement)
 - Creates database if it doesn't exist
 
@@ -108,12 +109,12 @@ mirrorvault restore
 ### Supported Formats
 
 - ✅ **SQL dumps** (`.sql`) - Created with `pg_dump`
-- ✅ **Compressed SQL dumps** (`.sql.gz`) - Created with `pg_dump | gzip`
+- ✅ **Compressed SQL dumps** (`.sql.gz`, `.sql.bz2`, `.sql.zip`) - Created with `pg_dump` and compression
 - ✅ **Single database dumps** - `pg_dump database_name`
 - ✅ **Cluster dumps** - `pg_dumpall` (extracts target database)
 - ✅ **Plain text format** - `pg_dump -F p` (explicit plain text)
-- ⚠️ **Custom format archives** - `pg_dump -F c` - **NOT YET SUPPORTED**
-- ⚠️ **Directory format** - `pg_dump -F d` - **NOT YET SUPPORTED**
+- ✅ **Custom format archives** - `pg_dump -F c`
+- ✅ **Directory format** - `pg_dump -F d`
 
 ### Backup Commands
 
@@ -155,9 +156,9 @@ sudo -u postgres pg_dump -F p -t table1 -t table2 DATABASE_NAME > /path/to/backu
 
 ### Restore Process
 
-MirrorVault uses the `psql` command to restore SQL dumps:
+MirrorVault uses the `psql` command to restore SQL dumps and `pg_restore` for custom/directory formats:
 - Automatically extracts target database from cluster dumps (`pg_dumpall`)
-- Handles gzip compression automatically
+- Handles gzip/bzip2/zip compression automatically
 - Terminates active connections before restore
 - Drops all existing tables before restore (complete replacement)
 - Creates database if it doesn't exist
@@ -188,6 +189,7 @@ mirrorvault restore
 - ✅ **Multi-database dumps** - `mongodump` (all databases)
 - ✅ **Archive format** - `mongodump --archive` (single file)
 - ✅ **Compressed archive** - `mongodump --archive --gzip` (`.gz` file)
+- ✅ **Archive in tar/zip** - Extracted and restored automatically
 
 ### Backup Commands
 
@@ -244,7 +246,8 @@ mirrorvault restore
 ### Supported Formats
 
 - ✅ **RDB files** (`.rdb`) - Standard Redis dump format
-- ✅ **Compressed RDB** (`.rdb.gz`) - Compressed RDB files
+- ✅ **Compressed RDB** (`.rdb.gz`, `.rdb.bz2`, `.rdb.zip`) - Compressed RDB files
+- ✅ **AOF** (`appendonly.aof`, `.aof`) - Append-only file backups
 
 ### Backup Commands
 
@@ -270,9 +273,9 @@ cp /var/lib/redis/dump.rdb.gz /path/to/backup.rdb.gz
 
 ### Restore Process
 
-MirrorVault restores RDB files by:
-- Copying `.rdb` file to Redis data directory
-- Handling gzip compression automatically
+MirrorVault restores RDB and AOF files by:
+- Copying `.rdb` or `.aof` file to Redis data directory
+- Handling gzip/bzip2/zip compression automatically
 - Stopping Redis before restore, starting after
 - Replacing existing dump file
 
@@ -299,7 +302,7 @@ mirrorvault restore
 
 - ✅ **Database files** (`.db`, `.sqlite`) - Direct copy
 - ✅ **SQL dumps** (`.sql`) - Created with `sqlite3 .dump`
-- ✅ **Compressed dumps** (`.sql.gz`, `.db.gz`) - Compressed versions
+- ✅ **Compressed dumps** (`.sql.gz`, `.sql.bz2`, `.sql.zip`, `.db.gz`, `.db.bz2`, `.db.zip`) - Compressed versions
 
 ### Backup Commands
 
@@ -332,7 +335,7 @@ gzip -c /path/to/database.db > /path/to/backup.db.gz
 MirrorVault restores SQLite databases by:
 - For `.db` files: Direct file copy
 - For `.sql` files: Uses `sqlite3` to import SQL dump
-- Handles gzip compression automatically
+- Handles gzip/bzip2/zip compression automatically
 - Replaces existing database file
 
 ### Example Workflow
@@ -352,13 +355,55 @@ mirrorvault restore
 
 ---
 
+## MSSQL
+
+### Supported Formats
+
+- ✅ **SQL Server backups** (`.bak`) - Created with `BACKUP DATABASE`
+- ✅ **Compressed backups** (`.bak.gz`, `.bak.bz2`, `.bak.zip`) - Extracted automatically
+
+### Backup Commands
+
+#### With SQL Authentication
+```bash
+sqlcmd -S localhost -U sa -P PASSWORD -Q "BACKUP DATABASE [DB] TO DISK = N'/path/to/backup.bak' WITH INIT, COPY_ONLY;"
+```
+
+#### With Windows Authentication
+```bash
+sqlcmd -S localhost -E -Q "BACKUP DATABASE [DB] TO DISK = N'/path/to/backup.bak' WITH INIT, COPY_ONLY;"
+```
+
+### Restore Process
+
+MirrorVault uses `sqlcmd` with `RESTORE DATABASE`:
+- Restores from `.bak` files only
+- Uses `WITH REPLACE` to restore over existing DB
+
+### Example Workflow
+
+```bash
+# 1. Create backup
+sqlcmd -S localhost -U sa -P PASSWORD -Q "BACKUP DATABASE [app_db] TO DISK = N'/home/user/app_db.bak' WITH INIT, COPY_ONLY;"
+
+# 2. Verify backup
+ls -lh /home/user/app_db.bak
+
+# 3. Restore using MirrorVault
+mirrorvault restore
+# Select MSSQL → Select app_db → Enter path → Confirm
+```
+
+---
+
 ## Compression Support
 
 ### Supported Compression Formats
 
 - ✅ **Gzip** (`.gz`) - Fully supported for all engines
-- ⚠️ **Bzip2** (`.bz2`) - Partially supported
-- ❌ **Zip** - Not supported
+- ✅ **Bzip2** (`.bz2`) - Supported for restore and optional backup compression
+- ✅ **Zip** (`.zip`) - Supported for restore and optional backup compression
+- ✅ **Tar** (`.tar.gz`, `.tar.bz2`) - Supported for directory-based dumps
 - ❌ **XZ** - Not supported
 
 ### Compression Best Practices
@@ -384,6 +429,24 @@ sqlite3 database.db .dump | gzip > backup.sql.gz
 file backup.sql.gz
 zcat backup.sql.gz | head -20
 ```
+
+### Optional Built-in Backup Compression
+
+MirrorVault can optionally compress backups after creation:
+
+```
+MV_BACKUP_COMPRESSION=gz   # gzip
+MV_BACKUP_COMPRESSION=bz2  # bzip2 (requires bzip2)
+MV_BACKUP_COMPRESSION=zip  # zip
+MV_BACKUP_KEEP_SOURCE=true # keep original uncompressed output
+```
+
+### Strict Validation (Optional)
+
+Set `MV_STRICT_VALIDATE=true` to enable deeper validation checks where supported:
+- MongoDB: `mongorestore --dryRun` (if supported by your version)
+- Redis: `redis-check-rdb` (if installed)
+- MSSQL: `RESTORE VERIFYONLY`
 
 ---
 
@@ -433,16 +496,24 @@ mongodump --out /path/to/dump
 
 ---
 
+## Engine-Specific Backup Options
+
+MirrorVault supports optional format selection for some engines:
+
+- **PostgreSQL**: `MV_POSTGRES_BACKUP_FORMAT=plain|custom|directory`
+- **MongoDB**: `MV_MONGO_BACKUP_FORMAT=directory|archive|archive.gz`
+- **SQLite**: `MV_SQLITE_BACKUP_MODE=dump|backup` (backup uses SQLite `.backup`)
+- **Redis**: `MV_REDIS_BACKUP_MODE=rdb|aof`
+- **MSSQL**: `MV_MSSQL_BACKUP_COMPRESSION=true` (adds `WITH COMPRESSION` to backups)
+
+---
+
 ## Limitations
 
 ### Not Currently Supported
 
-- ❌ PostgreSQL custom format archives (`pg_dump -F c`)
-- ❌ PostgreSQL directory format (`pg_dump -F d`)
 - ❌ MySQL binary logs
 - ❌ MongoDB oplog dumps
-- ❌ Redis AOF (Append-Only File) format
-- ❌ Compressed formats other than `.gz` (`.bz2` partially supported)
 - ❌ Incremental backups
 - ❌ Point-in-time recovery
 
@@ -576,11 +647,12 @@ gzip -c /path/to/backup.sql > /path/to/backup.sql.gz
 
 | Engine | SQL Dump | Directory | Archive | Binary | Compressed |
 |--------|----------|-----------|---------|--------|------------|
-| MySQL | ✅ | ❌ | ❌ | ❌ | ✅ (.gz) |
-| PostgreSQL | ✅ | ❌ | ❌ | ❌ | ✅ (.gz) |
-| MongoDB | ❌ | ✅ | ✅ | ❌ | ✅ (.gz) |
-| Redis | ❌ | ❌ | ❌ | ✅ (.rdb) | ✅ (.gz) |
-| SQLite | ✅ | ❌ | ❌ | ✅ (.db) | ✅ (.gz) |
+| MySQL | ✅ | ❌ | ❌ | ❌ | ✅ (.gz/.bz2/.zip) |
+| PostgreSQL | ✅ | ✅ (pg_dump -F d) | ✅ (pg_dump -F c) | ❌ | ✅ (.gz/.bz2/.zip) |
+| MongoDB | ❌ | ✅ | ✅ | ❌ | ✅ (.gz/.bz2/.zip/.tar.*) |
+| Redis | ❌ | ❌ | ❌ | ✅ (.rdb/.aof) | ✅ (.gz/.bz2/.zip) |
+| SQLite | ✅ | ❌ | ❌ | ✅ (.db) | ✅ (.gz/.bz2/.zip) |
+| MSSQL | ❌ | ❌ | ❌ | ✅ (.bak) | ✅ (.gz/.bz2/.zip) |
 
 ---
 
@@ -637,6 +709,15 @@ cp database.db backup.db
 # Restore (manual)
 sqlite3 database.db < backup.sql
 cp backup.db database.db
+```
+
+### MSSQL
+```bash
+# Backup
+sqlcmd -S localhost -U sa -P PASSWORD -Q "BACKUP DATABASE [DB] TO DISK = N'/path/to/backup.bak' WITH INIT, COPY_ONLY;"
+
+# Restore (manual)
+sqlcmd -S localhost -U sa -P PASSWORD -Q "RESTORE DATABASE [DB] FROM DISK = N'/path/to/backup.bak' WITH REPLACE;"
 ```
 
 ---

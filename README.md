@@ -7,10 +7,11 @@ MirrorVault is a comprehensive database backup and restore solution that support
 ## Features
 
 - 🔍 **Database Discovery**: Automatically scans and detects available database engines
-- 💾 **Multi-Engine Support**: MySQL, PostgreSQL, MongoDB, Redis, SQLite
-- 📅 **Scheduled Backups**: Automatic daily backups via systemd timers
+- 💾 **Multi-Engine Support**: MySQL, PostgreSQL, MongoDB, Redis, SQLite, MSSQL
+- 📅 **Scheduled Backups**: Automatic daily backups via systemd timers or cron
 - 🔄 **Safe Restore**: Pre-restore backups and automatic rollback on failure
 - 🎨 **Interactive TUI**: Beautiful terminal interface for all operations
+- ☁️ **Google Drive Backups**: Optional Drive uploads for manual backups
 - 📊 **Restore History**: Track all restore operations with detailed logs
 - 🧹 **Automatic Cleanup**: 14-day backup retention with automatic cleanup
 - 🔐 **Secure**: Handles authentication securely for protected databases
@@ -59,12 +60,13 @@ mirrorvault schedule-daily
 | MongoDB | Directory/Archive | Directory/Archive | Optional |
 | Redis | RDB (`.rdb`) | RDB files | Not required |
 | SQLite | DB/SQL | DB files/SQL dumps | Not required |
+| MSSQL | Backup (`.bak`) | Backup files | Required |
 
 ## Requirements
 
-- Linux system with systemd
+- Linux system with systemd or cron
 - Go 1.24+ (for building from source)
-- Database engines installed (MySQL, PostgreSQL, MongoDB, Redis, SQLite)
+- Database engines installed (MySQL, PostgreSQL, MongoDB, Redis, SQLite, MSSQL)
 - Sudo/root access for backup and restore operations
 
 ## Project Structure

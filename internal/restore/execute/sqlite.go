@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"compress/gzip"
 
 	"mirrorvault/internal/restore/log"
 	restoreplan "mirrorvault/internal/restore/plan"
@@ -41,72 +40,38 @@ func restoreSQLite(
 	onProgress("Restoring data", 0.6, "Importing data from dump...", nil)
 	logger.Info("Importing data from dump")
 
-	// Open dump file
-	file, err := os.Open(dumpPath)
-	if err != nil {
-		return fmt.Errorf("failed to open dump file: %w", err)
-	}
-	defer file.Close()
-
-	var reader io.Reader = file
-
-	// Handle compression
-	if dumpInfo.Compressed && dumpInfo.Compression == "gz" {
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			return fmt.Errorf("failed to create gzip reader: %w", err)
-		}
-		defer gzReader.Close()
-		reader = gzReader
-	}
-
-	// Create new database file
-	dbFile, err := os.Create(dbPath)
-	if err != nil {
-		return fmt.Errorf("failed to create database file: %w", err)
-	}
-	defer dbFile.Close()
-
-	// Read dump and write to database file
-	_, err = io.Copy(dbFile, reader)
-	if err != nil {
-		return fmt.Errorf("failed to write database file: %w", err)
-	}
-
-	// For SQL dumps, we need to import using sqlite3
-	// Check if dump is SQL format
 	if dumpInfo.Format == "sql" {
-		// Close the file we just created
-		dbFile.Close()
-
-		// Remove the file we created
-		os.Remove(dbPath)
-
-		// Reopen dump file
-		file2, err := os.Open(dumpPath)
+		reader, closeReader, err := validate.OpenDecompressedReader(dumpPath, dumpInfo)
 		if err != nil {
-			return fmt.Errorf("failed to reopen dump file: %w", err)
+			return fmt.Errorf("failed to open dump file: %w", err)
 		}
-		defer file2.Close()
+		defer closeReader()
 
-		var reader2 io.Reader = file2
-		if dumpInfo.Compressed && dumpInfo.Compression == "gz" {
-			gzReader, err := gzip.NewReader(file2)
-			if err != nil {
-				return fmt.Errorf("failed to create gzip reader: %w", err)
-			}
-			defer gzReader.Close()
-			reader2 = gzReader
-		}
-
-		// Use sqlite3 to import
 		cmd := exec.Command("sqlite3", dbPath)
-		cmd.Stdin = reader2
+		cmd.Stdin = reader
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to import SQL dump: %w", err)
 		}
+	} else if dumpInfo.Format == "sqlite" {
+		reader, closeReader, err := validate.OpenDecompressedReader(dumpPath, dumpInfo)
+		if err != nil {
+			return fmt.Errorf("failed to open dump file: %w", err)
+		}
+		defer closeReader()
+
+		dbFile, err := os.Create(dbPath)
+		if err != nil {
+			return fmt.Errorf("failed to create database file: %w", err)
+		}
+		defer dbFile.Close()
+
+		if _, err := io.Copy(dbFile, reader); err != nil {
+			return fmt.Errorf("failed to write database file: %w", err)
+		}
+	} else {
+		return fmt.Errorf("unsupported sqlite dump format: %s", dumpInfo.Format)
 	}
 
 	logger.Info("SQLite restore completed successfully")

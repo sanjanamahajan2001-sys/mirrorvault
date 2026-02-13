@@ -7,21 +7,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"mirrorvault/internal/backup/plan"
 )
 
 const (
-	SchedulesDir     = "/var/lib/mirrorvault"
-	SchedulesFile    = "/var/lib/mirrorvault/schedules.json"
-	SystemdUnitDir   = "/etc/systemd/system"
-	CleanupTimerName = "mirrorvault-cleanup.timer"
+	SchedulesDir       = "/var/lib/mirrorvault"
+	SchedulesFile      = "/var/lib/mirrorvault/schedules.json"
+	SystemdUnitDir     = "/etc/systemd/system"
+	CleanupTimerName   = "mirrorvault-cleanup.timer"
 	CleanupServiceName = "mirrorvault-cleanup.service"
 )
 
 type Schedule struct {
-	Engine    string   `json:"engine"`
-	Databases []string `json:"databases"`
-	Time      string   `json:"time"` // Format: HH:MM
-	TimerName string   `json:"timer_name"`
+	Engine      string   `json:"engine"`
+	Databases   []string `json:"databases"`
+	Time        string   `json:"time"` // Format: HH:MM
+	TimerName   string   `json:"timer_name"`
+	Compression string   `json:"compression,omitempty"`
 }
 
 type ScheduleStore struct {
@@ -74,11 +77,31 @@ func CheckDuplicate(engine string, databases []string) ([]string, error) {
 	}
 
 	duplicates := []string{}
+	seen := make(map[string]bool)
 	for _, schedule := range schedules {
 		if schedule.Engine == engine {
+			if containsAllDatabases(schedule.Databases) {
+				for _, db := range databases {
+					if !seen[db] {
+						seen[db] = true
+						duplicates = append(duplicates, db)
+					}
+				}
+				continue
+			}
+			if containsAllDatabases(databases) {
+				for _, scheduledDB := range schedule.Databases {
+					if !seen[scheduledDB] {
+						seen[scheduledDB] = true
+						duplicates = append(duplicates, scheduledDB)
+					}
+				}
+				continue
+			}
 			for _, db := range databases {
 				for _, scheduledDB := range schedule.Databases {
-					if db == scheduledDB {
+					if db == scheduledDB && !seen[db] {
+						seen[db] = true
 						duplicates = append(duplicates, db)
 					}
 				}
@@ -87,6 +110,15 @@ func CheckDuplicate(engine string, databases []string) ([]string, error) {
 	}
 
 	return duplicates, nil
+}
+
+func containsAllDatabases(databases []string) bool {
+	for _, name := range databases {
+		if name == plan.AllDatabasesName {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateTimerName generates a unique timer name for a schedule
@@ -119,20 +151,20 @@ func findMirrorVaultPath() (string, error) {
 			return execPath, nil
 		}
 	}
-	
+
 	// Try common locations
 	commonPaths := []string{
 		"/usr/local/bin/mirrorvault",
 		"/usr/bin/mirrorvault",
 		"/bin/mirrorvault",
 	}
-	
+
 	for _, path := range commonPaths {
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
 	}
-	
+
 	// Try using 'which' command
 	cmd := exec.Command("which", "mirrorvault")
 	output, err := cmd.Output()
@@ -142,7 +174,7 @@ func findMirrorVaultPath() (string, error) {
 			return path, nil
 		}
 	}
-	
+
 	// Try using 'whereis' command
 	cmd = exec.Command("whereis", "-b", "mirrorvault")
 	output, err = cmd.Output()
@@ -152,7 +184,7 @@ func findMirrorVaultPath() (string, error) {
 			return parts[1], nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("mirrorvault binary not found. Please install it to /usr/local/bin/ or ensure it's in PATH")
 }
 
@@ -164,7 +196,7 @@ func CreateSystemdTimer(schedule Schedule, password string) error {
 	if err != nil {
 		return fmt.Errorf("failed to find mirrorvault binary: %w", err)
 	}
-	
+
 	// Parse time (HH:MM format)
 	timeParts := strings.Split(schedule.Time, ":")
 	if len(timeParts) != 2 {
@@ -179,7 +211,7 @@ func CreateSystemdTimer(schedule Schedule, password string) error {
 
 	// Build databases list for the command
 	dbList := strings.Join(schedule.Databases, " ")
-	
+
 	// Create timer unit content
 	// Note: Timer units automatically trigger their corresponding .service unit
 	// No need to explicitly reference the service or cleanup service
@@ -201,14 +233,22 @@ WantedBy=timers.target
 	envVars := fmt.Sprintf(`Environment="MIRRORVAULT_SCHEDULED=true"
 Environment="MIRRORVAULT_SCHEDULED_ENGINE=%s"
 Environment="MIRRORVAULT_SCHEDULED_DBS=%s"`, schedule.Engine, dbList)
-	
-	// Add password environment variable if provided
+	if schedule.Compression != "" {
+		envVars += fmt.Sprintf("\nEnvironment=\"MV_BACKUP_COMPRESSION=%s\"", schedule.Compression)
+	}
+
+	// Add password environment variable if provided (fallback)
 	// Format: MIRRORVAULT_<ENGINE>_PASSWORD
 	if password != "" {
 		envVarName := fmt.Sprintf("MIRRORVAULT_%s_PASSWORD", strings.ToUpper(schedule.Engine))
 		envVars += fmt.Sprintf("\nEnvironment=\"%s=%s\"", envVarName, password)
 	}
-	
+
+	// Use EnvironmentFile if a secret exists (preferred)
+	if secretPath, ok := secretFileExists(schedule.TimerName); ok {
+		envVars += fmt.Sprintf("\nEnvironmentFile=%s", secretPath)
+	}
+
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=MirrorVault daily backup for %s databases: %s
 After=network.target
@@ -257,7 +297,7 @@ User=root
 
 // AddSchedule adds a new schedule and creates the systemd timer
 // password is optional and only needed if the engine requires authentication
-func AddSchedule(engine string, databases []string, time string, password string) error {
+func AddSchedule(engine string, databases []string, time string, compression string, password string) error {
 	// Check for duplicates
 	duplicates, err := CheckDuplicate(engine, databases)
 	if err != nil {
@@ -272,10 +312,11 @@ func AddSchedule(engine string, databases []string, time string, password string
 
 	// Create schedule
 	schedule := Schedule{
-		Engine:    engine,
-		Databases: databases,
-		Time:      time,
-		TimerName: timerName,
+		Engine:      engine,
+		Databases:   databases,
+		Time:        time,
+		TimerName:   timerName,
+		Compression: compression,
 	}
 
 	// Load existing schedules
@@ -287,9 +328,8 @@ func AddSchedule(engine string, databases []string, time string, password string
 	// Check if cleanup service exists, create if not
 	// This ensures cleanup is set up on first schedule
 	if len(schedules) == 0 {
-		if err := CreateCleanupService(); err != nil {
-			// Log error but continue - cleanup service creation failure shouldn't block scheduling
-			// In production, you might want to handle this differently
+		if err := ensureCleanupSchedule(); err != nil {
+			// Log error but continue - cleanup setup failure shouldn't block scheduling
 		}
 	}
 
@@ -301,8 +341,13 @@ func AddSchedule(engine string, databases []string, time string, password string
 		return err
 	}
 
-	// Create systemd timer with password if provided
-	if err := CreateSystemdTimer(schedule, password); err != nil {
+	// Store credentials securely (if provided)
+	if _, err := writeSecretFile(timerName, engine, password); err != nil {
+		return err
+	}
+
+	// Create backend schedule entry
+	if err := applyScheduleBackend(schedule); err != nil {
 		// If timer creation fails, remove the schedule from the list
 		// Find and remove the schedule we just added
 		for i, s := range schedules {
@@ -312,6 +357,7 @@ func AddSchedule(engine string, databases []string, time string, password string
 				break
 			}
 		}
+		_ = removeSecretFile(timerName)
 		return err
 	}
 
@@ -326,6 +372,9 @@ func GetAllSchedules() ([]Schedule, error) {
 // FixExistingTimers removes the incorrect Requires dependency from all existing timer units
 // This fixes timers that were created before the bug fix
 func FixExistingTimers() error {
+	if detectBackend() != backendSystemd {
+		return nil
+	}
 	// Find all mirrorvault timer files (excluding cleanup timer)
 	timerFiles, err := filepath.Glob(filepath.Join(SystemdUnitDir, "mirrorvault-*.timer"))
 	if err != nil {
@@ -402,17 +451,21 @@ func RemoveSchedule(timerName string) error {
 			// Stop and disable the timer
 			exec.Command("sudo", "systemctl", "stop", timerName).Run()
 			exec.Command("sudo", "systemctl", "disable", timerName).Run()
-			
+
 			// Remove timer and service files
 			timerPath := filepath.Join(SystemdUnitDir, timerName)
 			serviceName := strings.Replace(timerName, ".timer", ".service", 1)
 			servicePath := filepath.Join(SystemdUnitDir, serviceName)
-			
+
 			os.Remove(timerPath)
 			os.Remove(servicePath)
-			
+
 			// Reload systemd
 			exec.Command("sudo", "systemctl", "daemon-reload").Run()
+			if err := removeScheduleBackend(timerName); err != nil {
+				return err
+			}
+			_ = removeSecretFile(timerName)
 		} else {
 			newSchedules = append(newSchedules, s)
 		}
@@ -458,50 +511,25 @@ func UpdateScheduleTime(timerName string, newTime string) error {
 	for i := range schedules {
 		if schedules[i].TimerName == timerName {
 			found = true
-			
-			// Stop and disable old timer
-			exec.Command("sudo", "systemctl", "stop", timerName).Run()
-			exec.Command("sudo", "systemctl", "disable", timerName).Run()
-			
-			// Remove old timer and service files
-			timerPath := filepath.Join(SystemdUnitDir, timerName)
-			serviceName := strings.Replace(timerName, ".timer", ".service", 1)
-			servicePath := filepath.Join(SystemdUnitDir, serviceName)
-			os.Remove(timerPath)
-			os.Remove(servicePath)
-			
+
+			// Remove old backend entry
+			if err := removeScheduleBackend(timerName); err != nil {
+				return err
+			}
+
 			// Update time and regenerate timer name
 			schedules[i].Time = newTime
 			schedules[i].TimerName = GenerateTimerName(schedules[i].Engine, schedules[i].Databases, newTime)
-			
-			// Create new systemd timer with updated time
-			// Preserve password from existing service file if it exists
-			existingPassword := ""
-			if servicePath != "" {
-				// Try to read password from existing service file
-				existingServiceContent, err := os.ReadFile(servicePath)
-				if err == nil {
-					// Extract password from environment variable
-					lines := strings.Split(string(existingServiceContent), "\n")
-					envVarPrefix := fmt.Sprintf("MIRRORVAULT_%s_PASSWORD=", strings.ToUpper(schedules[i].Engine))
-					for _, line := range lines {
-						if strings.Contains(line, envVarPrefix) {
-							// Extract password value
-							parts := strings.SplitN(line, "=", 2)
-							if len(parts) == 2 {
-								// Remove quotes if present
-								existingPassword = strings.Trim(parts[1], `"`)
-							}
-							break
-						}
-					}
-				}
+
+			// Preserve credentials file (if any)
+			if err := renameSecretFile(timerName, schedules[i].TimerName); err != nil {
+				return fmt.Errorf("failed to update credentials file: %w", err)
 			}
-			
-			if err := CreateSystemdTimer(schedules[i], existingPassword); err != nil {
-				return fmt.Errorf("failed to create updated timer: %w", err)
+
+			if err := applyScheduleBackend(schedules[i]); err != nil {
+				return fmt.Errorf("failed to create updated schedule: %w", err)
 			}
-			
+
 			break
 		}
 	}
@@ -512,4 +540,54 @@ func UpdateScheduleTime(timerName string, newTime string) error {
 
 	// Save updated schedules
 	return SaveSchedules(schedules)
+}
+
+func applyScheduleBackend(schedule Schedule) error {
+	switch detectBackend() {
+	case backendSystemd:
+		return CreateSystemdTimer(schedule, "")
+	case backendCron:
+		mirrorvaultPath, err := findMirrorVaultPath()
+		if err != nil {
+			return fmt.Errorf("failed to find mirrorvault binary: %w", err)
+		}
+		return createCronSchedule(schedule, mirrorvaultPath)
+	default:
+		return fmt.Errorf("no supported scheduler backend found (systemd or cron required)")
+	}
+}
+
+func removeScheduleBackend(timerName string) error {
+	switch detectBackend() {
+	case backendSystemd:
+		// Stop and disable the timer
+		exec.Command("sudo", "systemctl", "stop", timerName).Run()
+		exec.Command("sudo", "systemctl", "disable", timerName).Run()
+
+		// Remove timer and service files
+		timerPath := filepath.Join(SystemdUnitDir, timerName)
+		serviceName := strings.Replace(timerName, ".timer", ".service", 1)
+		servicePath := filepath.Join(SystemdUnitDir, serviceName)
+		os.Remove(timerPath)
+		os.Remove(servicePath)
+
+		// Reload systemd
+		exec.Command("sudo", "systemctl", "daemon-reload").Run()
+		return nil
+	case backendCron:
+		return removeCronSchedule(timerName)
+	default:
+		return fmt.Errorf("no supported scheduler backend found (systemd or cron required)")
+	}
+}
+
+func ensureCleanupSchedule() error {
+	switch detectBackend() {
+	case backendSystemd:
+		return CreateCleanupService()
+	case backendCron:
+		return CreateCleanupCron()
+	default:
+		return fmt.Errorf("no supported scheduler backend found (systemd or cron required)")
+	}
 }

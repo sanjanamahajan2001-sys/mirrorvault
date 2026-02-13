@@ -9,6 +9,17 @@ const (
 	ExecFailed
 )
 
+type DriveStatus int
+
+const (
+	DriveNone DriveStatus = iota
+	DriveChecking
+	DriveUploading
+	DriveDone
+	DriveFailed
+	DriveSkipped
+)
+
 type ExecItem struct {
 	Engine   string
 	Database string
@@ -16,6 +27,13 @@ type ExecItem struct {
 	Path     string
 	Size     int64
 	Err      error
+	DriveStatus        DriveStatus
+	DriveMessage       string
+	DriveRemoteName    string
+	DriveErr           error
+	DriveAccountRemain int64
+	DriveAccountTotal  int64
+	DriveBackupSize    int64
 }
 
 type ExecState struct {

@@ -14,16 +14,31 @@ import (
 	"mirrorvault/internal/backup/plan"
 )
 
+func sqliteBackupMode() string {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("MV_SQLITE_BACKUP_MODE")))
+	if value == "backup" {
+		return "backup"
+	}
+	return "dump"
+}
+
 func runSQLite(
 	engine plan.EnginePlan,
 	creds *credentials.AuthContext,
 	onProgress ProgressFunc,
 ) error {
+	if err := requireCommand("sqlite3"); err != nil {
+		return err
+	}
 
 	baseDir := engine.OutputDir
 
 	if err := ensureDir(baseDir); err != nil {
 		return err
+	}
+
+	if engine.AllDatabases {
+		return runSQLiteAllDatabases(engine, onProgress)
 	}
 
 	for _, db := range engine.Databases {
@@ -34,9 +49,14 @@ func runSQLite(
 		// Extract base name for filename generation
 		dbBaseName := strings.TrimSuffix(filepath.Base(dbPath), filepath.Ext(dbPath))
 
-		// Generate filename with current date: dbname_YYYY-MM-DD.sql
+		backupMode := sqliteBackupMode()
+		// Generate filename with current date
 		currentDate := time.Now().Format("2006-01-02")
-		fileName := fmt.Sprintf("%s_%s.sql", dbBaseName, currentDate)
+		ext := ".sql"
+		if backupMode == "backup" {
+			ext = ".db"
+		}
+		fileName := fmt.Sprintf("%s_%s%s", dbBaseName, currentDate, ext)
 		outFile := filepath.Join(baseDir, fileName)
 
 		// ▶ running
@@ -69,8 +89,47 @@ func runSQLite(
 			return err
 		}
 
+		if backupMode == "backup" {
+			var stderr bytes.Buffer
+			cmd := exec.Command("sqlite3", dbPath, fmt.Sprintf(".backup '%s'", outFile))
+			cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+			if err := cmd.Run(); err != nil {
+				stderrStr := stderr.String()
+				errMsg := fmt.Errorf("sqlite3 backup failed: %v", err)
+				if stderrStr != "" {
+					errMsg = fmt.Errorf("sqlite3 backup failed: %v\n%s", err, stderrStr)
+				}
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", errMsg)
+				return errMsg
+			}
+
+			size, err := validateNonEmptyFile(outFile)
+			if err != nil {
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", err)
+				return err
+			}
+			compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+			if err != nil {
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", err)
+				return err
+			}
+			outFile = compressedPath
+			size = compressedSize
+
+			onProgress(
+				engine.Engine,
+				dbIdentifier,
+				outFile,
+				size,
+				"done",
+				nil,
+			)
+			continue
+		}
+
 		// Create output file first
-		f, err := os.Create(outFile)
+		f, err := createWritableFile(outFile)
 		if err != nil {
 			onProgress(engine.Engine, dbBaseName, "", 0, "failed", err)
 			return err
@@ -157,11 +216,22 @@ func runSQLite(
 				}
 			}
 			// Success - get file size and report done
-			info, _ := os.Stat(outFile)
-			var size int64
-			if info != nil {
-				size = info.Size()
+			size, err := validateNonEmptyFile(outFile)
+			if err != nil {
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", err)
+				return err
 			}
+			if err := validateSQLDump(outFile); err != nil {
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", err)
+				return err
+			}
+			compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+			if err != nil {
+				onProgress(engine.Engine, dbIdentifier, "", 0, "failed", err)
+				return err
+			}
+			outFile = compressedPath
+			size = compressedSize
 			onProgress(
 				engine.Engine,
 				dbIdentifier,
@@ -186,6 +256,101 @@ func runSQLite(
 			return errMsg
 		}
 	}
+
+	return nil
+}
+
+func runSQLiteAllDatabases(
+	engine plan.EnginePlan,
+	onProgress ProgressFunc,
+) error {
+	baseDir := engine.OutputDir
+	currentDate := time.Now().Format("2006-01-02")
+	prefix := strings.ToLower(engine.Engine)
+	outFile := filepath.Join(baseDir, fmt.Sprintf("%s_all_databases_%s.sql", prefix, currentDate))
+	progressName := "All databases"
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		0,
+		"running",
+		nil,
+	)
+
+	f, err := createWritableFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	defer f.Close()
+
+	for _, db := range engine.Databases {
+		dbPath := db.Name
+		fileInfo, err := os.Stat(dbPath)
+		if os.IsNotExist(err) {
+			err := fmt.Errorf("database file does not exist: %s", dbPath)
+			onProgress(engine.Engine, progressName, "", 0, "failed", err)
+			return err
+		}
+		if err != nil {
+			err := fmt.Errorf("cannot access database file: %s: %v", dbPath, err)
+			onProgress(engine.Engine, progressName, "", 0, "failed", err)
+			return err
+		}
+		if fileInfo.Mode().Perm()&0444 == 0 {
+			err := fmt.Errorf("database file is not readable: %s", dbPath)
+			onProgress(engine.Engine, progressName, "", 0, "failed", err)
+			return err
+		}
+
+		dbBaseName := strings.TrimSuffix(filepath.Base(dbPath), filepath.Ext(dbPath))
+		_, _ = f.WriteString(fmt.Sprintf("\n-- SQLite dump for database: %s\n", dbBaseName))
+		_, _ = f.WriteString(fmt.Sprintf("-- Source: %s\n\n", dbPath))
+
+		var stderr bytes.Buffer
+		cmd := exec.Command("sqlite3", "-batch", "-readonly", dbPath, ".dump")
+		cmd.Stdout = f
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+		if err := cmd.Run(); err != nil {
+			stderrStr := stderr.String()
+			errMsg := fmt.Errorf("sqlite3 dump failed for %s: %v", dbPath, err)
+			if stderrStr != "" {
+				errMsg = fmt.Errorf("sqlite3 dump failed for %s: %v\n%s", dbPath, err, stderrStr)
+			}
+			onProgress(engine.Engine, progressName, "", 0, "failed", errMsg)
+			return errMsg
+		}
+	}
+
+	size, err := validateNonEmptyFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	if err := validateSQLDump(outFile); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	outFile = compressedPath
+	size = compressedSize
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		size,
+		"done",
+		nil,
+	)
 
 	return nil
 }

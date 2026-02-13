@@ -5,8 +5,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 
+	"mirrorvault/internal/backup/plan"
 	"mirrorvault/pkg/model"
 )
+
+const allDatabasesLabel = "Backup all databases"
+
+func dbSelectOptions(engine *model.Database) []string {
+	if engine == nil {
+		return nil
+	}
+	displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
+	options := make([]string, 0, len(displayNames)+1)
+	options = append(options, displayNames...)
+	options = append(options, allDatabasesLabel)
+	return options
+}
 
 func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	engine := m.currentEngine()
@@ -15,7 +29,7 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
+	displayNames := dbSelectOptions(engine)
 
 	switch msg.String() {
 	case "up":
@@ -33,7 +47,7 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		// Get the actual database name from the filtered display list
-		displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
+		displayNames := dbSelectOptions(engine)
 		if m.Selection.DBIndex >= 0 && m.Selection.DBIndex < len(displayNames) {
 			name := displayNames[m.Selection.DBIndex]
 			engineName := engine.Engine
@@ -43,13 +57,34 @@ func (m TUIModel) updateDBSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.Selection.SelectedDBs[engineName] = make(map[string]bool)
 			}
 
+			selectionKey := name
+			if name == allDatabasesLabel {
+				if engine.RequiresAuth {
+					return m, nil
+				}
+				selectionKey = plan.AllDatabasesName
+			}
+
+			if selectionKey == plan.AllDatabasesName {
+				if m.Selection.SelectedDBs[engineName][selectionKey] {
+					delete(m.Selection.SelectedDBs[engineName], selectionKey)
+				} else {
+					m.Selection.SelectedDBs[engineName] = map[string]bool{selectionKey: true}
+				}
+				return m, nil
+			}
+
+			if m.Selection.SelectedDBs[engineName][plan.AllDatabasesName] {
+				delete(m.Selection.SelectedDBs[engineName], plan.AllDatabasesName)
+			}
+
 			if engine.RequiresAuth {
 				// For auth-enabled engines, only one database allowed
 				// Clear all selections for this engine first
-				m.Selection.SelectedDBs[engineName] = map[string]bool{name: true}
+				m.Selection.SelectedDBs[engineName] = map[string]bool{selectionKey: true}
 			} else {
 				// Toggle selection for this database in this engine
-				m.Selection.SelectedDBs[engineName][name] = !m.Selection.SelectedDBs[engineName][name]
+				m.Selection.SelectedDBs[engineName][selectionKey] = !m.Selection.SelectedDBs[engineName][selectionKey]
 			}
 		}
 	case "enter":
@@ -106,8 +141,7 @@ func (m TUIModel) viewDBSelect() string {
 	var b strings.Builder
 	b.WriteString(SectionTitleStyle.Render(fmt.Sprintf("Select database(s) for %s", engine.Engine)) + "\n\n")
 
-	// Filter default databases for display (but keep them available for backup)
-	displayNames := filterDefaultDatabases(engine.Engine, engine.Names)
+	displayNames := dbSelectOptions(engine)
 
 	// Calculate available height for database list
 	// Reserve space for: header (2 lines), auth message (2 lines if shown), footer (1 line)
@@ -156,15 +190,23 @@ func (m TUIModel) viewDBSelect() string {
 
 		check := "[ ] "
 		engineName := engine.Engine
-		if m.Selection.SelectedDBs[engineName] != nil && m.Selection.SelectedDBs[engineName][name] {
+		selectionKey := name
+		if name == allDatabasesLabel {
+			selectionKey = plan.AllDatabasesName
+		}
+		if m.Selection.SelectedDBs[engineName] != nil && m.Selection.SelectedDBs[engineName][selectionKey] {
 			check = "[x] "
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, check, name))
+		displayName := name
+		if name == allDatabasesLabel && engine.RequiresAuth {
+			displayName = "Backup all databases (disabled - auth enabled)"
+		}
+		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, check, displayName))
 	}
 
 	if engine.RequiresAuth {
-		b.WriteString("\n" + AuthStyle.Render("! Auth enabled: only ONE database allowed") + "\n")
+		b.WriteString("\n" + AuthStyle.Render("! Auth enabled: create separate backups per database") + "\n")
 	}
 
 	// Add scroll indicator if needed

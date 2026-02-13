@@ -2,14 +2,13 @@ package execute
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
 
 	"mirrorvault/internal/backup/credentials"
+	"mirrorvault/internal/config"
 	"mirrorvault/internal/restore/log"
 	restoreplan "mirrorvault/internal/restore/plan"
 	"mirrorvault/internal/restore/validate"
@@ -34,6 +33,11 @@ func restoreMySQL(
 		password = pwd
 	}
 
+	user := config.MySQLUser()
+	host := config.MySQLHost()
+	port := config.MySQLPort()
+	useSudo := host == "" || host == "localhost" || host == "127.0.0.1"
+
 	// Step 1: Analyze dump to find tables that will be restored
 	onProgress("Analyzing dump", 0.4, "Extracting table information from dump...", nil)
 	logger.Info("Analyzing dump to identify tables")
@@ -50,10 +54,20 @@ func restoreMySQL(
 	onProgress("Preparing database", 0.5, "Ensuring database exists...", nil)
 	logger.Info("Ensuring database exists")
 	var createCmd *exec.Cmd
+	createArgs := []string{"mysql", "-u", user, "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", restorePlan.Database)}
+	if host != "" {
+		createArgs = append(createArgs, "-h", host)
+	}
+	if port != "" {
+		createArgs = append(createArgs, "-P", port)
+	}
 	if restorePlan.RequiresAuth {
-		createCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", restorePlan.Database))
+		createArgs = append(createArgs, "-p"+password)
+	}
+	if useSudo {
+		createCmd = exec.Command("sudo", createArgs...)
 	} else {
-		createCmd = exec.Command("sudo", "mysql", "-u", "root", "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", restorePlan.Database))
+		createCmd = exec.Command(createArgs[0], createArgs[1:]...)
 	}
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
@@ -64,19 +78,29 @@ func restoreMySQL(
 	// This ensures the current database exactly matches the dump - no preservation
 	onProgress("Preparing database", 0.55, "Dropping all existing tables...", nil)
 	logger.Info("Dropping all existing tables to completely replace with dump state")
-	
+
 	// Get list of all current tables in database
 	var listTablesCmd *exec.Cmd
-	if restorePlan.RequiresAuth {
-		listTablesCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, "-N", "-e", fmt.Sprintf("USE %s; SHOW TABLES;", restorePlan.Database))
-	} else {
-		listTablesCmd = exec.Command("sudo", "mysql", "-u", "root", "-N", "-e", fmt.Sprintf("USE %s; SHOW TABLES;", restorePlan.Database))
+	listArgs := []string{"mysql", "-u", user, "-N", "-e", fmt.Sprintf("USE %s; SHOW TABLES;", restorePlan.Database)}
+	if host != "" {
+		listArgs = append(listArgs, "-h", host)
 	}
-	
+	if port != "" {
+		listArgs = append(listArgs, "-P", port)
+	}
+	if restorePlan.RequiresAuth {
+		listArgs = append(listArgs, "-p"+password)
+	}
+	if useSudo {
+		listTablesCmd = exec.Command("sudo", listArgs...)
+	} else {
+		listTablesCmd = exec.Command(listArgs[0], listArgs[1:]...)
+	}
+
 	var tablesOut bytes.Buffer
 	listTablesCmd.Stdout = &tablesOut
 	listTablesCmd.Stderr = os.Stderr
-	
+
 	currentTables := []string{}
 	if err := listTablesCmd.Run(); err == nil {
 		// Parse current tables
@@ -88,15 +112,25 @@ func restoreMySQL(
 		}
 		logger.Info(fmt.Sprintf("Found %d existing tables to drop: %v", len(currentTables), currentTables))
 	}
-	
+
 	// Drop all existing tables
 	if len(currentTables) > 0 {
 		for _, tableName := range currentTables {
 			var dropTableCmd *exec.Cmd
+			dropArgs := []string{"mysql", "-u", user, "-e", fmt.Sprintf("USE %s; DROP TABLE IF EXISTS %s;", restorePlan.Database, tableName)}
+			if host != "" {
+				dropArgs = append(dropArgs, "-h", host)
+			}
+			if port != "" {
+				dropArgs = append(dropArgs, "-P", port)
+			}
 			if restorePlan.RequiresAuth {
-				dropTableCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, "-e", fmt.Sprintf("USE %s; DROP TABLE IF EXISTS %s;", restorePlan.Database, tableName))
+				dropArgs = append(dropArgs, "-p"+password)
+			}
+			if useSudo {
+				dropTableCmd = exec.Command("sudo", dropArgs...)
 			} else {
-				dropTableCmd = exec.Command("sudo", "mysql", "-u", "root", "-e", fmt.Sprintf("USE %s; DROP TABLE IF EXISTS %s;", restorePlan.Database, tableName))
+				dropTableCmd = exec.Command(dropArgs[0], dropArgs[1:]...)
 			}
 			dropTableCmd.Stderr = os.Stderr
 			if err := dropTableCmd.Run(); err != nil {
@@ -123,39 +157,31 @@ func restoreMySQL(
 		return fmt.Errorf("dump file is empty")
 	}
 
-	// Open dump file
-	file, err := os.Open(dumpPath)
+	reader, closeReader, usedFallback, err := validate.OpenDecompressedReaderBestEffort(dumpPath, dumpInfo)
 	if err != nil {
 		return fmt.Errorf("failed to open dump file: %w", err)
 	}
-	defer file.Close()
-
-	var reader io.Reader = file
-
-	// Handle compression - try gzip first, fall back to uncompressed if it fails
-	if dumpInfo.Compressed && dumpInfo.Compression == "gz" {
-		// Try to create gzip reader
-		gzReader, err := gzip.NewReader(file)
-		if err != nil {
-			// Not a valid gzip file, treat as uncompressed
-			logger.Warning(fmt.Sprintf("File has .gz extension but is not gzipped (%v), treating as uncompressed", err))
-			if _, err := file.Seek(0, 0); err != nil {
-				return fmt.Errorf("failed to reset file position: %w", err)
-			}
-			reader = file
-		} else {
-			// Valid gzip file
-			defer gzReader.Close()
-			reader = gzReader
-		}
+	if usedFallback {
+		logger.Warning("File has .gz extension but is not gzipped; treating as uncompressed")
 	}
+	defer closeReader()
 
 	// Create mysql command
 	var restoreCmd *exec.Cmd
+	restoreArgs := []string{"mysql", "-u", user, restorePlan.Database}
+	if host != "" {
+		restoreArgs = append(restoreArgs, "-h", host)
+	}
+	if port != "" {
+		restoreArgs = append(restoreArgs, "-P", port)
+	}
 	if restorePlan.RequiresAuth {
-		restoreCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, restorePlan.Database)
+		restoreArgs = append(restoreArgs, "-p"+password)
+	}
+	if useSudo {
+		restoreCmd = exec.Command("sudo", restoreArgs...)
 	} else {
-		restoreCmd = exec.Command("sudo", "mysql", "-u", "root", restorePlan.Database)
+		restoreCmd = exec.Command(restoreArgs[0], restoreArgs[1:]...)
 	}
 
 	restoreCmd.Stdin = reader
@@ -191,22 +217,47 @@ func rollbackMySQL(
 		password = pwd
 	}
 
+	user := config.MySQLUser()
+	host := config.MySQLHost()
+	port := config.MySQLPort()
+	useSudo := host == "" || host == "localhost" || host == "127.0.0.1"
+
 	// Drop database
 	var dropCmd *exec.Cmd
+	dropArgs := []string{"mysql", "-u", user, "-e", fmt.Sprintf("DROP DATABASE IF EXISTS %s;", restorePlan.Database)}
+	if host != "" {
+		dropArgs = append(dropArgs, "-h", host)
+	}
+	if port != "" {
+		dropArgs = append(dropArgs, "-P", port)
+	}
 	if restorePlan.RequiresAuth {
-		dropCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, "-e", fmt.Sprintf("DROP DATABASE IF EXISTS %s;", restorePlan.Database))
+		dropArgs = append(dropArgs, "-p"+password)
+	}
+	if useSudo {
+		dropCmd = exec.Command("sudo", dropArgs...)
 	} else {
-		dropCmd = exec.Command("sudo", "mysql", "-u", "root", "-e", fmt.Sprintf("DROP DATABASE IF EXISTS %s;", restorePlan.Database))
+		dropCmd = exec.Command(dropArgs[0], dropArgs[1:]...)
 	}
 	dropCmd.Stderr = os.Stderr
 	dropCmd.Run() // Ignore errors
 
 	// Create database
 	var createCmd *exec.Cmd
+	createArgs := []string{"mysql", "-u", user, "-e", fmt.Sprintf("CREATE DATABASE %s;", restorePlan.Database)}
+	if host != "" {
+		createArgs = append(createArgs, "-h", host)
+	}
+	if port != "" {
+		createArgs = append(createArgs, "-P", port)
+	}
 	if restorePlan.RequiresAuth {
-		createCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, "-e", fmt.Sprintf("CREATE DATABASE %s;", restorePlan.Database))
+		createArgs = append(createArgs, "-p"+password)
+	}
+	if useSudo {
+		createCmd = exec.Command("sudo", createArgs...)
 	} else {
-		createCmd = exec.Command("sudo", "mysql", "-u", "root", "-e", fmt.Sprintf("CREATE DATABASE %s;", restorePlan.Database))
+		createCmd = exec.Command(createArgs[0], createArgs[1:]...)
 	}
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
@@ -221,10 +272,20 @@ func rollbackMySQL(
 	defer file.Close()
 
 	var restoreCmd *exec.Cmd
+	restoreArgs := []string{"mysql", "-u", user, restorePlan.Database}
+	if host != "" {
+		restoreArgs = append(restoreArgs, "-h", host)
+	}
+	if port != "" {
+		restoreArgs = append(restoreArgs, "-P", port)
+	}
 	if restorePlan.RequiresAuth {
-		restoreCmd = exec.Command("sudo", "mysql", "-u", "root", "-p"+password, restorePlan.Database)
+		restoreArgs = append(restoreArgs, "-p"+password)
+	}
+	if useSudo {
+		restoreCmd = exec.Command("sudo", restoreArgs...)
 	} else {
-		restoreCmd = exec.Command("sudo", "mysql", "-u", "root", restorePlan.Database)
+		restoreCmd = exec.Command(restoreArgs[0], restoreArgs[1:]...)
 	}
 
 	restoreCmd.Stdin = file

@@ -6,10 +6,117 @@ import (
 
 	"mirrorvault/internal/backup/credentials"
 	"mirrorvault/internal/backup/plan"
+	"mirrorvault/internal/drive"
 	"mirrorvault/pkg/model"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func (m TUIModel) startBackupExecution() (tea.Model, tea.Cmd) {
+	selection := m.ExportSelection()
+	if len(selection) == 0 {
+		return m, nil
+	}
+
+	var allExecItems []ExecItem
+	for engineName, dbNames := range selection {
+		if len(dbNames) == 1 && dbNames[0] == plan.AllDatabasesName {
+			allExecItems = append(allExecItems, ExecItem{
+				Engine:   engineName,
+				Database: "All databases",
+				Status:   ExecPending,
+			})
+			continue
+		}
+		for _, dbName := range dbNames {
+			allExecItems = append(allExecItems, ExecItem{
+				Engine:   engineName,
+				Database: dbName,
+				Status:   ExecPending,
+			})
+		}
+	}
+
+	m.Exec = ExecState{
+		Items: allExecItems,
+	}
+
+	if m.Mode == BackupMode {
+		if m.BackupCompression == "" {
+			_ = os.Unsetenv("MV_BACKUP_COMPRESSION")
+		} else {
+			_ = os.Setenv("MV_BACKUP_COMPRESSION", m.BackupCompression)
+		}
+
+		backupPlan, err := plan.Build(m.ScanResult, selection)
+		if err != nil {
+			for _, item := range m.Exec.Items {
+				EmitExecProgress(
+					item.Engine,
+					item.Database,
+					"",
+					0,
+					"failed",
+					fmt.Errorf("failed to build backup plan: %v", err),
+				)
+			}
+			m.ViewState = ViewExecute
+			m.Exec.Done = true
+			m.Exec.AwaitExit = true
+			return m, execTick()
+		}
+
+		authCtx := credentials.NewContext()
+		for _, eng := range backupPlan.Engines {
+			if !eng.RequiresAuth {
+				continue
+			}
+
+			password, err := credentials.Prompt(eng.Engine)
+			if err != nil {
+				for _, item := range m.Exec.Items {
+					EmitExecProgress(
+						item.Engine,
+						item.Database,
+						"",
+						0,
+						"failed",
+						fmt.Errorf("failed to collect credentials: %v", err),
+					)
+				}
+				m.ViewState = ViewExecute
+				m.Exec.Done = true
+				m.Exec.AwaitExit = true
+				return m, execTick()
+			}
+
+			authCtx.Set(eng.Engine, password)
+		}
+
+		m.Plan = backupPlan
+		m.Auth = authCtx
+
+		if m.Plan == nil {
+			for _, item := range m.Exec.Items {
+				EmitExecProgress(
+					item.Engine,
+					item.Database,
+					"",
+					0,
+					"failed",
+					fmt.Errorf("plan was nil after building"),
+				)
+			}
+			m.ViewState = ViewExecute
+			m.Exec.Done = true
+			m.Exec.AwaitExit = true
+			return m, execTick()
+		}
+	}
+
+	m.ViewState = ViewExecute
+	return m, tea.Batch(startExecutionCmd(m), execTick())
+}
 
 func (m TUIModel) Init() tea.Cmd {
 	if m.ViewState == ViewExecute {
@@ -29,11 +136,18 @@ func (m TUIModel) currentEngine() *model.Database {
 }
 
 func Run(scan model.ScanResult, mode Mode) (bool, error) {
+	driveCfg, driveErr := drive.LoadConfig()
+	if driveCfg == nil {
+		driveCfg = &drive.Config{Provider: "google_drive"}
+	}
 	m := TUIModel{
-		ScanResult: scan,
-		Mode:       mode,
-		ViewState:  ViewScan,
-		Selection:  NewSelectionState(),
+		ScanResult:           scan,
+		Mode:                 mode,
+		ViewState:            ViewScan,
+		Selection:            NewSelectionState(),
+		DriveConfig:          driveCfg,
+		DriveConfigLoadError: driveErr,
+		DriveEnabled:         driveCfg != nil && driveCfg.Enabled && driveCfg.IsConfigured(),
 	}
 
 	p := tea.NewProgram(
@@ -68,6 +182,24 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.ViewState {
+		case ViewDriveSetup:
+			return m.updateDriveSetup(msg)
+		case ViewDriveConnect:
+			return m.updateDriveConnect(msg)
+		case ViewDriveClientSetup:
+			return m.updateDriveClientSetup(msg)
+		case ViewDriveConnectMethod:
+			return m.updateDriveConnectMethod(msg)
+		case ViewDriveFolderSelect:
+			return m.updateDriveFolderSelect(msg)
+		case ViewDriveFolderCreate:
+			return m.updateDriveFolderCreate(msg)
+		case ViewRestoreSource:
+			return m.updateRestoreSource(msg)
+		case ViewDriveFileSelect:
+			return m.updateDriveFileSelect(msg)
+		case ViewDriveDownload:
+			return m.updateDriveDownload(msg)
 
 		case ViewRestoreSelectEngine:
 			return m.updateRestoreSelectEngine(msg)
@@ -85,6 +217,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewScan:
 			// In ScanMode, Enter should do nothing - only allow exit
 			if msg.String() == "enter" && m.Mode != ScanMode {
+				if m.Mode == BackupMode {
+					m.ViewState = ViewDriveSetup
+					return m, m.driveSetupInitCmd()
+				}
 				m.ViewState = ViewSelectEngine
 			}
 			return m, nil
@@ -148,137 +284,33 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						Time:      "",
 					}
 					m.ScheduleTime = ""
-					m.ViewState = ViewScheduleTime
+					m.ScheduleFormatIndex = 0
+					m.ViewState = ViewScheduleFormatSelect
 					return m, nil
 				}
 
-				// Build ExecState with all selected databases from all engines
-				var allExecItems []ExecItem
-				for engineName, dbNames := range selection {
-					for _, dbName := range dbNames {
-						allExecItems = append(allExecItems, ExecItem{
-							Engine:   engineName,
-							Database: dbName,
-							Status:   ExecPending,
-						})
-					}
-				}
-
-				m.Exec = ExecState{
-					Items: allExecItems,
-				}
-
-				// Build plan and collect credentials before execution
 				if m.Mode == BackupMode {
-					selection := m.ExportSelection()
-					// Debug: check if selection is empty
-					if len(selection) == 0 {
-						for _, item := range m.Exec.Items {
-							EmitExecProgress(
-								item.Engine,
-								item.Database,
-								"",
-								0,
-								"failed",
-								fmt.Errorf("no databases in selection"),
-							)
-						}
-						m.ViewState = ViewExecute
-						m.Exec.Done = true
-						m.Exec.AwaitExit = true
-						return m, execTick()
-					}
-
-					backupPlan, err := plan.Build(m.ScanResult, selection)
-					if err != nil {
-						// If plan building fails, emit error for all databases
-						for _, item := range m.Exec.Items {
-							EmitExecProgress(
-								item.Engine,
-								item.Database,
-								"",
-								0,
-								"failed",
-								fmt.Errorf("failed to build backup plan: %v", err),
-							)
-						}
-						m.ViewState = ViewExecute
-						m.Exec.Done = true
-						m.Exec.AwaitExit = true
-						return m, execTick()
-					}
-
-					// Collect credentials
-					authCtx := credentials.NewContext()
-					for _, eng := range backupPlan.Engines {
-						if !eng.RequiresAuth {
-							continue
-						}
-
-						password, err := credentials.Prompt(eng.Engine)
-						if err != nil {
-							// If credential collection fails, emit error for all databases
-							for _, item := range m.Exec.Items {
-								EmitExecProgress(
-									item.Engine,
-									item.Database,
-									"",
-									0,
-									"failed",
-									fmt.Errorf("failed to collect credentials: %v", err),
-								)
-							}
-							m.ViewState = ViewExecute
-							m.Exec.Done = true
-							m.Exec.AwaitExit = true
-							return m, execTick()
-						}
-
-						authCtx.Set(eng.Engine, password)
-					}
-
-					m.Plan = backupPlan
-					m.Auth = authCtx
-
-					// Verify plan is set before starting execution
-					if m.Plan == nil {
-						for _, item := range m.Exec.Items {
-							EmitExecProgress(
-								item.Engine,
-								item.Database,
-								"",
-								0,
-								"failed",
-								fmt.Errorf("plan was nil after building"),
-							)
-						}
-						m.ViewState = ViewExecute
-						m.Exec.Done = true
-						m.Exec.AwaitExit = true
-						return m, execTick()
-					}
-				} else {
-					// Scan mode - no plan needed, just mark as done
-					m.Plan = nil
-					m.Auth = nil
+					m.BackupFormatIndex = 0
+					m.BackupCompression = ""
+					m.ViewState = ViewBackupFormatSelect
+					return m, nil
 				}
 
-				// Transition to execution view and start immediately
-				// Don't wait for another key press - start execution right away
-				m.ViewState = ViewExecute
-				// Start execution and begin polling for progress messages
-				// The plan should now be set, so startExecutionCmd will have access to it
-				// Return immediately to start execution - this prevents any buffered
-				// Enter key from password submission from being processed again
-				return m, tea.Batch(startExecutionCmd(m), execTick())
+				return m.startBackupExecution()
 			}
 			return m.updateDBSelect(msg)
+
+		case ViewBackupFormatSelect:
+			return m.updateBackupFormatSelect(msg)
 
 		case ViewExecute:
 			return m.updateExecute(msg)
 
 		case ViewScheduleTime:
 			return m.updateScheduleTime(msg)
+
+		case ViewScheduleFormatSelect:
+			return m.updateScheduleFormatSelect(msg)
 
 		case ViewScheduleConfirm:
 			return m.updateScheduleConfirm(msg)
@@ -292,6 +324,9 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
+		if m2, cmd, handled := m.updateDriveMsg(msg); handled {
+			return m2, cmd
+		}
 		// 🔥 ALL execution progress events land here (non-KeyMsg messages)
 		if m.ViewState == ViewExecute {
 			return m.updateExecute(msg)
@@ -307,10 +342,24 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m TUIModel) View() string {
 	switch m.ViewState {
+	case ViewDriveSetup:
+		return m.viewDriveSetup()
+	case ViewDriveConnect:
+		return m.viewDriveConnect()
+	case ViewDriveClientSetup:
+		return m.viewDriveClientSetup()
+	case ViewDriveConnectMethod:
+		return m.viewDriveConnectMethod()
+	case ViewDriveFolderSelect:
+		return m.viewDriveFolderSelect()
+	case ViewDriveFolderCreate:
+		return m.viewDriveFolderCreate()
 	case ViewRestoreSelectEngine:
 		return m.viewRestoreSelectEngine()
 	case ViewRestoreSelectDB:
 		return m.viewRestoreSelectDB()
+	case ViewRestoreSource:
+		return m.viewRestoreSource()
 	case ViewRestoreDumpPath:
 		return m.viewRestoreDumpPath()
 	case ViewRestoreConfirm:
@@ -319,14 +368,22 @@ func (m TUIModel) View() string {
 		return m.viewRestoreProgress()
 	case ViewRestoreHistory:
 		return m.viewRestoreHistory()
+	case ViewDriveFileSelect:
+		return m.viewDriveFileSelect()
+	case ViewDriveDownload:
+		return m.viewDriveDownload()
 	case ViewSelectEngine:
 		return m.viewEngineSelect()
 	case ViewSelectDB:
 		return m.viewDBSelect()
+	case ViewBackupFormatSelect:
+		return m.viewBackupFormatSelect()
 	case ViewExecute:
 		return m.viewExecute()
 	case ViewScheduleTime:
 		return m.viewScheduleTime()
+	case ViewScheduleFormatSelect:
+		return m.viewScheduleFormatSelect()
 	case ViewScheduleConfirm:
 		return m.viewScheduleConfirm()
 	case ViewScheduleList:

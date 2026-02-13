@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 
+	"mirrorvault/internal/drive"
 	"mirrorvault/pkg/model"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,7 +14,12 @@ func RunWithModel(scan model.ScanResult, mode Mode) (TUIModel, bool, error) {
 	if mode == RestoreMode {
 		initialView = ViewRestoreSelectEngine
 	}
-	
+
+	driveCfg, driveErr := drive.LoadConfig()
+	if driveCfg == nil {
+		driveCfg = &drive.Config{Provider: "google_drive"}
+	}
+
 	m := TUIModel{
 		ScanResult:        scan,
 		Mode:              mode,
@@ -23,6 +29,9 @@ func RunWithModel(scan model.ScanResult, mode Mode) (TUIModel, bool, error) {
 		TerminalHeight:    24,  // Default height
 		RestoreScrollOffset: 0,
 		DBSelectScrollOffset: 0,
+		DriveConfig:       driveCfg,
+		DriveConfigLoadError: driveErr,
+		DriveEnabled:      driveCfg != nil && driveCfg.Enabled && driveCfg.IsConfigured(),
 	}
 
 	p := tea.NewProgram(

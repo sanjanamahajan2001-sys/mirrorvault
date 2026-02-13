@@ -12,25 +12,83 @@ import (
 
 	"mirrorvault/internal/backup/credentials"
 	"mirrorvault/internal/backup/plan"
+	"mirrorvault/internal/config"
 )
+
+func postgresBackupFormat() string {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("MV_POSTGRES_BACKUP_FORMAT")))
+	switch value {
+	case "custom", "c":
+		return "custom"
+	case "directory", "dir", "d":
+		return "directory"
+	default:
+		return "plain"
+	}
+}
+
+func pgDumpBaseArgs(format string, outputPath string, includeNoOwner bool, includeNoAcl bool, verbose bool) []string {
+	args := []string{"pg_dump"}
+	switch format {
+	case "custom":
+		args = append(args, "-F", "c")
+	case "directory":
+		args = append(args, "-F", "d", "-f", outputPath)
+	default:
+		args = append(args, "-F", "p")
+	}
+	if includeNoOwner {
+		args = append(args, "--no-owner")
+	}
+	if includeNoAcl {
+		args = append(args, "--no-acl")
+	}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+	return args
+}
 
 func runPostgreSQL(
 	engine plan.EnginePlan,
 	creds *credentials.AuthContext,
 	onProgress ProgressFunc,
 ) error {
+	if err := requireCommand("pg_dump"); err != nil {
+		return err
+	}
+	if err := requireCommand("psql"); err != nil {
+		return err
+	}
 
 	baseDir := engine.OutputDir
+	user := config.PostgresUser()
+	host := config.PostgresHost()
+	port := config.PostgresPort()
+	useSudo := host == "" && user == "postgres"
+	backupFormat := postgresBackupFormat()
 
 	if err := ensureDir(baseDir); err != nil {
 		return err
 	}
 
+	if engine.AllDatabases {
+		return runPostgreSQLAllDatabases(engine, creds, onProgress)
+	}
+
 	for _, db := range engine.Databases {
-		// Generate filename with current date: dbname_YYYY-MM-DD.sql
+		var err error
+		// Generate output path based on format
 		currentDate := time.Now().Format("2006-01-02")
-		fileName := fmt.Sprintf("%s_%s.sql", db.Name, currentDate)
-		outFile := filepath.Join(baseDir, fileName)
+		var outFile string
+		switch backupFormat {
+		case "custom":
+			outFile = filepath.Join(baseDir, fmt.Sprintf("%s_%s.dump", db.Name, currentDate))
+		case "directory":
+			outFile = filepath.Join(baseDir, fmt.Sprintf("%s_%s", db.Name, currentDate))
+		default:
+			outFile = filepath.Join(baseDir, fmt.Sprintf("%s_%s.sql", db.Name, currentDate))
+		}
 
 		// ▶ running
 		onProgress(
@@ -42,14 +100,31 @@ func runPostgreSQL(
 			nil,
 		)
 
-		// Create output file first
-		f, err := os.Create(outFile)
-		if err != nil {
-			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
-			return err
+		var cmd *exec.Cmd
+
+		var f *os.File
+		if backupFormat != "directory" {
+			var err error
+			f, err = createWritableFile(outFile)
+			if err != nil {
+				onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+				return err
+			}
+		} else {
+			_ = os.RemoveAll(outFile)
 		}
 
-		var cmd *exec.Cmd
+		baseArgs := pgDumpBaseArgs(backupFormat, outFile, false, false, false)
+		if user != "" {
+			baseArgs = append(baseArgs, "-U", user)
+		}
+		if host != "" {
+			baseArgs = append(baseArgs, "-h", host)
+		}
+		if port != "" {
+			baseArgs = append(baseArgs, "-p", port)
+		}
+		baseArgs = append(baseArgs, db.Name)
 
 		if engine.RequiresAuth {
 			pwd, ok := creds.Get("PostgreSQL")
@@ -61,35 +136,34 @@ func runPostgreSQL(
 			}
 
 			// pg_dump with password via PGPASSWORD environment variable
-			// Use stdout redirection instead of -f flag for better compatibility with sudo
-			cmd = exec.Command(
-				"sudo",
-				"-u", "postgres",
-				"pg_dump",
-				"-F", "p", // plain text format
-				db.Name,
-			)
+			if useSudo {
+				cmd = exec.Command("sudo", append([]string{"-u", "postgres"}, baseArgs...)...)
+			} else {
+				cmd = exec.Command(baseArgs[0], baseArgs[1:]...)
+			}
 			// Set PGPASSWORD in the environment
 			cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", pwd))
 		} else {
 			// pg_dump without password
-			cmd = exec.Command(
-				"sudo",
-				"-u", "postgres",
-				"pg_dump",
-				"-F", "p", // plain text format
-				db.Name,
-			)
+			if useSudo {
+				cmd = exec.Command("sudo", append([]string{"-u", "postgres"}, baseArgs...)...)
+			} else {
+				cmd = exec.Command(baseArgs[0], baseArgs[1:]...)
+			}
 		}
 
 		var stderr bytes.Buffer
-		cmd.Stdout = f
+		if f != nil {
+			cmd.Stdout = f
+		}
 		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
 
 		err = cmd.Run()
 		if err != nil {
-			_ = f.Close()
-			_ = os.Remove(outFile) // Remove incomplete file
+			if f != nil {
+				_ = f.Close()
+			}
+			_ = os.RemoveAll(outFile) // Remove incomplete output
 			
 			stderrStr := stderr.String()
 			// Check if it's a connection or data corruption error
@@ -103,48 +177,55 @@ func runPostgreSQL(
 			// Try fallback with different flags
 			if isDataError {
 				// Retry with --no-owner and --no-acl flags (more compatible)
-				f2, err2 := os.Create(outFile)
-				if err2 != nil {
-					errMsg := fmt.Errorf("pg_dump failed: %v\n%s\n(Fallback also failed: %v)", err, stderrStr, err2)
-					onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
-					return errMsg
+				var f2 *os.File
+				var err2 error
+				if backupFormat != "directory" {
+					f2, err2 = createWritableFile(outFile)
+					if err2 != nil {
+						errMsg := fmt.Errorf("pg_dump failed: %v\n%s\n(Fallback also failed: %v)", err, stderrStr, err2)
+						onProgress(engine.Engine, db.Name, "", 0, "failed", errMsg)
+						return errMsg
+					}
+				} else {
+					_ = os.RemoveAll(outFile)
 				}
 				
 				var cmd2 *exec.Cmd
 				var stderr2 bytes.Buffer
 				
+				fallbackArgs := pgDumpBaseArgs(backupFormat, outFile, true, true, true)
+				if user != "" {
+					fallbackArgs = append(fallbackArgs, "-U", user)
+				}
+				if host != "" {
+					fallbackArgs = append(fallbackArgs, "-h", host)
+				}
+				if port != "" {
+					fallbackArgs = append(fallbackArgs, "-p", port)
+				}
+				fallbackArgs = append(fallbackArgs, db.Name)
+
+				if useSudo {
+					cmd2 = exec.Command("sudo", append([]string{"-u", "postgres"}, fallbackArgs...)...)
+				} else {
+					cmd2 = exec.Command(fallbackArgs[0], fallbackArgs[1:]...)
+				}
+
 				if engine.RequiresAuth {
 					pwd, _ := creds.Get("PostgreSQL")
-					cmd2 = exec.Command(
-						"sudo",
-						"-u", "postgres",
-						"pg_dump",
-						"-F", "p",
-						"--no-owner",    // Skip ownership commands
-						"--no-acl",      // Skip access privileges
-						"--verbose",      // More detailed output for debugging
-						db.Name,
-					)
 					cmd2.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", pwd))
-				} else {
-					cmd2 = exec.Command(
-						"sudo",
-						"-u", "postgres",
-						"pg_dump",
-						"-F", "p",
-						"--no-owner",
-						"--no-acl",
-						"--verbose",
-						db.Name,
-					)
 				}
 				
-				cmd2.Stdout = f2
+				if f2 != nil {
+					cmd2.Stdout = f2
+				}
 				cmd2.Stderr = io.MultiWriter(&stderr2, os.Stderr)
 				
 				if err2 := cmd2.Run(); err2 != nil {
-					_ = f2.Close()
-					_ = os.Remove(outFile)
+					if f2 != nil {
+						_ = f2.Close()
+					}
+					_ = os.RemoveAll(outFile)
 					
 					// Both attempts failed - try dumping tables individually as last resort
 					if err3 := tryDumpPostgresTablesIndividually(engine, creds, db.Name, outFile, onProgress); err3 != nil {
@@ -154,11 +235,15 @@ func runPostgreSQL(
 						return errMsg
 					}
 					// Individual table dump succeeded
-					_ = f2.Close()
+					if f2 != nil {
+						_ = f2.Close()
+					}
 					f = f2
 				} else {
 					// Fallback succeeded
-					_ = f2.Close()
+					if f2 != nil {
+						_ = f2.Close()
+					}
 					f = f2
 				}
 			} else {
@@ -172,13 +257,34 @@ func runPostgreSQL(
 			}
 		}
 
-		_ = f.Close()
-
-		info, _ := os.Stat(outFile)
-		var size int64
-		if info != nil {
-			size = info.Size()
+		if f != nil {
+			_ = f.Close()
 		}
+
+		var size int64
+		if backupFormat == "directory" {
+			size, err = validateNonEmptyDir(outFile)
+		} else {
+			size, err = validateNonEmptyFile(outFile)
+		}
+		if err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
+		}
+		if backupFormat == "plain" {
+			if err := validateSQLDump(outFile); err != nil {
+				onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+				return err
+			}
+		}
+
+		compressedPath, compressedSize, err := applyBackupCompression(outFile, backupFormat == "directory")
+		if err != nil {
+			onProgress(engine.Engine, db.Name, "", 0, "failed", err)
+			return err
+		}
+		outFile = compressedPath
+		size = compressedSize
 
 		// ✔ done
 		onProgress(
@@ -194,6 +300,124 @@ func runPostgreSQL(
 	return nil
 }
 
+func runPostgreSQLAllDatabases(
+	engine plan.EnginePlan,
+	creds *credentials.AuthContext,
+	onProgress ProgressFunc,
+) error {
+	if err := requireCommand("pg_dump"); err != nil {
+		return err
+	}
+
+	baseDir := engine.OutputDir
+	user := config.PostgresUser()
+	host := config.PostgresHost()
+	port := config.PostgresPort()
+	useSudo := host == "" && user == "postgres"
+
+	currentDate := time.Now().Format("2006-01-02")
+	prefix := strings.ToLower(engine.Engine)
+	outFile := filepath.Join(baseDir, fmt.Sprintf("%s_all_databases_%s.sql", prefix, currentDate))
+	progressName := "All databases"
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		0,
+		"running",
+		nil,
+	)
+
+	if len(engine.Databases) == 0 {
+		err := fmt.Errorf("no databases available for PostgreSQL backup")
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	f, err := os.OpenFile(outFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	defer f.Close()
+
+	for _, db := range engine.Databases {
+		_, _ = f.WriteString(fmt.Sprintf("\n-- PostgreSQL dump for database: %s\n\n", db.Name))
+
+		args := []string{"pg_dump", "-F", "p", "-C"}
+		if user != "" {
+			args = append(args, "-U", user)
+		}
+		if host != "" {
+			args = append(args, "-h", host)
+		}
+		if port != "" {
+			args = append(args, "-p", port)
+		}
+		args = append(args, db.Name)
+
+		var cmd *exec.Cmd
+		if useSudo {
+			cmd = exec.Command("sudo", append([]string{"-u", "postgres"}, args...)...)
+		} else {
+			cmd = exec.Command(args[0], args[1:]...)
+		}
+		if engine.RequiresAuth {
+			pwd, ok := creds.Get("PostgreSQL")
+			if !ok {
+				err := fmt.Errorf("missing PostgreSQL credentials")
+				onProgress(engine.Engine, progressName, "", 0, "failed", err)
+				return err
+			}
+			cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", pwd))
+		}
+
+		var stderr bytes.Buffer
+		cmd.Stdout = f
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+
+		if err := cmd.Run(); err != nil {
+			_ = os.Remove(outFile)
+			errMsg := fmt.Errorf("pg_dump failed for %s: %v", db.Name, err)
+			if stderr.Len() > 0 {
+				errMsg = fmt.Errorf("pg_dump failed for %s: %v\n%s", db.Name, err, stderr.String())
+			}
+			onProgress(engine.Engine, progressName, "", 0, "failed", errMsg)
+			return errMsg
+		}
+	}
+
+	size, err := validateNonEmptyFile(outFile)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	if err := validateSQLDump(outFile); err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+
+	compressedPath, compressedSize, err := applyBackupCompression(outFile, false)
+	if err != nil {
+		onProgress(engine.Engine, progressName, "", 0, "failed", err)
+		return err
+	}
+	outFile = compressedPath
+	size = compressedSize
+
+	onProgress(
+		engine.Engine,
+		progressName,
+		outFile,
+		size,
+		"done",
+		nil,
+	)
+
+	return nil
+}
+
 // tryDumpPostgresTablesIndividually attempts to dump tables one by one when full database dump fails
 func tryDumpPostgresTablesIndividually(
 	engine plan.EnginePlan,
@@ -202,16 +426,47 @@ func tryDumpPostgresTablesIndividually(
 	outFile string,
 	onProgress ProgressFunc,
 ) error {
+	user := config.PostgresUser()
+	host := config.PostgresHost()
+	port := config.PostgresPort()
+	useSudo := host == "" && user == "postgres"
+
 	// Get list of tables in the database
 	var listCmd *exec.Cmd
 	if engine.RequiresAuth {
 		pwd, _ := creds.Get("PostgreSQL")
-		listCmd = exec.Command("sudo", "-u", "postgres", "psql", "-t", "-c", 
-			fmt.Sprintf("SELECT tablename FROM pg_tables WHERE schemaname='public';"), dbName)
+		listArgs := []string{"psql", "-t", "-c", "SELECT tablename FROM pg_tables WHERE schemaname='public';", dbName}
+		if user != "" {
+			listArgs = append([]string{listArgs[0], "-U", user}, listArgs[1:]...)
+		}
+		if host != "" {
+			listArgs = append(listArgs, "-h", host)
+		}
+		if port != "" {
+			listArgs = append(listArgs, "-p", port)
+		}
+		if useSudo {
+			listCmd = exec.Command("sudo", append([]string{"-u", "postgres"}, listArgs...)...)
+		} else {
+			listCmd = exec.Command(listArgs[0], listArgs[1:]...)
+		}
 		listCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", pwd))
 	} else {
-		listCmd = exec.Command("sudo", "-u", "postgres", "psql", "-t", "-c", 
-			fmt.Sprintf("SELECT tablename FROM pg_tables WHERE schemaname='public';"), dbName)
+		listArgs := []string{"psql", "-t", "-c", "SELECT tablename FROM pg_tables WHERE schemaname='public';", dbName}
+		if user != "" {
+			listArgs = append([]string{listArgs[0], "-U", user}, listArgs[1:]...)
+		}
+		if host != "" {
+			listArgs = append(listArgs, "-h", host)
+		}
+		if port != "" {
+			listArgs = append(listArgs, "-p", port)
+		}
+		if useSudo {
+			listCmd = exec.Command("sudo", append([]string{"-u", "postgres"}, listArgs...)...)
+		} else {
+			listCmd = exec.Command(listArgs[0], listArgs[1:]...)
+		}
 	}
 	
 	var tablesOut bytes.Buffer
@@ -236,7 +491,7 @@ func tryDumpPostgresTablesIndividually(
 	}
 	
 	// Create output file
-	f, err := os.Create(outFile)
+	f, err := createWritableFile(outFile)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %v", err)
 	}
@@ -254,30 +509,27 @@ func tryDumpPostgresTablesIndividually(
 	for _, tableName := range tableNames {
 		var dumpCmd *exec.Cmd
 		
+		dumpArgs := []string{"pg_dump", "-F", "p", "--no-owner", "--no-acl", "-t", tableName}
+		if user != "" {
+			dumpArgs = append(dumpArgs, "-U", user)
+		}
+		if host != "" {
+			dumpArgs = append(dumpArgs, "-h", host)
+		}
+		if port != "" {
+			dumpArgs = append(dumpArgs, "-p", port)
+		}
+		dumpArgs = append(dumpArgs, dbName)
+
+		if useSudo {
+			dumpCmd = exec.Command("sudo", append([]string{"-u", "postgres"}, dumpArgs...)...)
+		} else {
+			dumpCmd = exec.Command(dumpArgs[0], dumpArgs[1:]...)
+		}
+
 		if engine.RequiresAuth {
 			pwd, _ := creds.Get("PostgreSQL")
-			dumpCmd = exec.Command(
-				"sudo",
-				"-u", "postgres",
-				"pg_dump",
-				"-F", "p",
-				"--no-owner",
-				"--no-acl",
-				"-t", tableName,
-				dbName,
-			)
 			dumpCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", pwd))
-		} else {
-			dumpCmd = exec.Command(
-				"sudo",
-				"-u", "postgres",
-				"pg_dump",
-				"-F", "p",
-				"--no-owner",
-				"--no-acl",
-				"-t", tableName,
-				dbName,
-			)
 		}
 		
 		var tableStderr bytes.Buffer

@@ -97,20 +97,37 @@ func restoreRedis(
 	onProgress("Restoring data", 0.6, "Copying dump file...", nil)
 	logger.Info("Copying dump file to Redis data directory")
 
-	source, err := os.Open(dumpPath)
+	if dumpInfo.Format == "redis_aof" {
+		appendOnly, err := getRedisConfigValue(password, restorePlan.RequiresAuth, "appendonly")
+		if err != nil {
+			return fmt.Errorf("failed to read redis appendonly config: %w", err)
+		}
+		if strings.ToLower(strings.TrimSpace(appendOnly)) != "yes" {
+			return fmt.Errorf("redis appendonly mode is disabled; cannot restore AOF")
+		}
+		appendFilename, err := getRedisConfigValue(password, restorePlan.RequiresAuth, "appendfilename")
+		if err != nil {
+			return fmt.Errorf("failed to read redis appendfilename: %w", err)
+		}
+		if appendFilename == "" {
+			appendFilename = "appendonly.aof"
+		}
+		dumpFile = filepath.Join(redisDir, appendFilename)
+	}
+
+	reader, closeReader, err := validate.OpenDecompressedReader(dumpPath, dumpInfo)
 	if err != nil {
 		return fmt.Errorf("failed to open dump file: %w", err)
 	}
-	defer source.Close()
+	defer closeReader()
 
 	dest, err := os.Create(dumpFile)
 	if err != nil {
-		return fmt.Errorf("failed to create dump.rdb: %w", err)
+		return fmt.Errorf("failed to create dump file: %w", err)
 	}
 	defer dest.Close()
 
-	_, err = io.Copy(dest, source)
-	if err != nil {
+	if _, err := io.Copy(dest, reader); err != nil {
 		return fmt.Errorf("failed to copy dump file: %w", err)
 	}
 
@@ -119,8 +136,7 @@ func restoreRedis(
 	logger.Info("Starting Redis server")
 
 	// Redis should start automatically via systemd, but we can try to start it
-	startCmd := exec.Command("systemctl", "start", "redis")
-	startCmd.Run() // Ignore errors - Redis might already be running
+	_ = startRedisService()
 
 	logger.Info("Redis restore completed successfully")
 	return nil
@@ -214,9 +230,52 @@ func rollbackRedis(
 	}
 
 	// Start Redis
-	startCmd := exec.Command("systemctl", "start", "redis")
-	startCmd.Run()
+	_ = startRedisService()
 
 	logger.Info("Redis rollback completed successfully")
 	return nil
+}
+
+func startRedisService() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+
+	serviceCandidates := []string{
+		"redis",
+		"redis-server",
+		"redis@default",
+		"redis@6379",
+	}
+
+	for _, service := range serviceCandidates {
+		cmd := exec.Command("systemctl", "start", service)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func getRedisConfigValue(password string, requiresAuth bool, key string) (string, error) {
+	var cmd *exec.Cmd
+	if requiresAuth {
+		cmd = exec.Command("redis-cli", "-a", password, "CONFIG", "GET", key)
+	} else {
+		cmd = exec.Command("redis-cli", "CONFIG", "GET", key)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.EqualFold(line, key) {
+			continue
+		}
+		return line, nil
+	}
+	return "", nil
 }

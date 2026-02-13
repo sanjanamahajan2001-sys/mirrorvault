@@ -53,10 +53,20 @@ func Build(
 			),
 		}
 
-		for _, name := range dbNames {
-			enginePlan.Databases = append(enginePlan.Databases, DatabasePlan{
-				Name: name,
-			})
+		if containsAllDatabases(dbNames) {
+			enginePlan.AllDatabases = true
+			filteredNames := filterSystemDatabases(db.Engine, db.Names)
+			for _, name := range filteredNames {
+				enginePlan.Databases = append(enginePlan.Databases, DatabasePlan{
+					Name: name,
+				})
+			}
+		} else {
+			for _, name := range dbNames {
+				enginePlan.Databases = append(enginePlan.Databases, DatabasePlan{
+					Name: name,
+				})
+			}
 		}
 
 		plan.Engines = append(plan.Engines, enginePlan)
@@ -67,4 +77,53 @@ func Build(
 	}
 
 	return plan, nil
+}
+
+func containsAllDatabases(names []string) bool {
+	for _, name := range names {
+		if name == AllDatabasesName {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSystemDatabases(engine string, names []string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if isSystemDatabase(engine, name) {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
+}
+
+func isSystemDatabase(engine string, name string) bool {
+	switch engine {
+	case "MySQL":
+		switch name {
+		case "mysql", "sys", "performance_schema", "information_schema":
+			return true
+		}
+	case "PostgreSQL":
+		switch name {
+		case "postgres", "template0", "template1":
+			return true
+		}
+	case "MongoDB":
+		switch name {
+		case "admin", "local", "config":
+			return true
+		}
+	case "MSSQL":
+		switch name {
+		case "master", "model", "msdb", "tempdb":
+			return true
+		}
+	}
+	return false
 }

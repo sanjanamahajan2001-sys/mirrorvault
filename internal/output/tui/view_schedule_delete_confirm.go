@@ -107,7 +107,7 @@ func (m TUIModel) viewScheduleDeleteConfirm() string {
 		b.WriteString("\nSchedule to delete:\n\n")
 
 		b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(scheduleToDelete.Engine)))
-		b.WriteString(fmt.Sprintf("Databases: %s\n", strings.Join(scheduleToDelete.Databases, ", ")))
+	b.WriteString(fmt.Sprintf("Databases: %s\n", formatDatabaseList(scheduleToDelete.Databases)))
 		b.WriteString(fmt.Sprintf("Time: %s\n\n", scheduleToDelete.Time))
 		b.WriteString("This will stop and remove the scheduled backup.\n")
 		b.WriteString("Backup files will NOT be deleted.\n\n")

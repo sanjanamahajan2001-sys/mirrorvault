@@ -89,7 +89,7 @@ func (m TUIModel) viewScheduleTime() string {
 	if isEditing {
 		b.WriteString(SectionTitleStyle.Render("Edit Backup Time") + "\n\n")
 		b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(m.ScheduleData.Engine)))
-		b.WriteString(fmt.Sprintf("Databases: %s\n", strings.Join(m.ScheduleData.Databases, ", ")))
+	b.WriteString(fmt.Sprintf("Databases: %s\n", formatDatabaseList(m.ScheduleData.Databases)))
 		b.WriteString(fmt.Sprintf("Current Time: %s\n\n", m.ScheduleData.Time))
 	} else {
 		b.WriteString(SectionTitleStyle.Render("Enter backup time") + "\n\n")
@@ -111,7 +111,15 @@ func (m TUIModel) viewScheduleTime() string {
 		}
 
 		b.WriteString(fmt.Sprintf("Engine: %s\n", EngineNameStyle.Render(currentEngine.Engine)))
-		b.WriteString(fmt.Sprintf("Databases: %s\n\n", strings.Join(selectedDBs, ", ")))
+	b.WriteString(fmt.Sprintf("Databases: %s\n\n", formatDatabaseList(selectedDBs)))
+	}
+
+	if m.ScheduleData != nil {
+		formatLabel := "Native"
+		if m.ScheduleData.Compression != "" {
+			formatLabel = fmt.Sprintf("Compressed (%s)", m.ScheduleData.Compression)
+		}
+		b.WriteString(fmt.Sprintf("Format: %s\n\n", formatLabel))
 	}
 
 	b.WriteString("Enter time in 00:00 to 24:00 format\n")
