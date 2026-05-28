@@ -80,6 +80,19 @@ stateDiagram-v2
     RollbackComplete --> [*]
     Success --> [*]
 ```
+<img width="1308" height="867" alt="image" src="https://github.com/user-attachments/assets/ffd99639-8db7-487c-aa69-415316705f7c" />
+<img width="568" height="802" alt="image" src="https://github.com/user-attachments/assets/f3f418a0-b1e1-4740-a469-420a722f9469" />
+<img width="1014" height="527" alt="image" src="https://github.com/user-attachments/assets/ca2b2956-7bca-4adb-a000-28e950ba8fe2" />
+<img width="855" height="643" alt="image" src="https://github.com/user-attachments/assets/71a35f0f-9fc4-4e6c-a00d-da75ce377573" />
+
+(GOOGLE DRIVE BACKUP STORAGE AUTOMATION)
+<img width="1005" height="646" alt="image" src="https://github.com/user-attachments/assets/132c28d5-8037-4a4d-81af-12d93c0a5b8e" />
+<img width="743" height="354" alt="image" src="https://github.com/user-attachments/assets/8a7d67c4-d32a-4ab6-9606-11a1227fedd4" />
+<img width="851" height="537" alt="image" src="https://github.com/user-attachments/assets/5bf9a299-e993-418f-951a-7805e8499edb" />
+<img width="727" height="708" alt="image" src="https://github.com/user-attachments/assets/e5627e93-cd33-48cc-84da-8a5e44fc3cbe" />
+<img width="1510" height="712" alt="image" src="https://github.com/user-attachments/assets/033c585a-a194-460b-b2a4-b77bd93cdb8d" />
+
+
 
 ---
 
